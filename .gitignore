@@ -1,0 +1,56 @@
+# --- Claude Code -----------------------------------------------------------
+.claude/
+CLAUDE.local.md
+
+# --- Python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# ambientes virtuais
+.venv/
+venv/
+env/
+ENV/
+
+# pacotes copiados na mao (ex.: PYTHONPATH=libs)
+libs/
+
+# empacotamento / instalacao
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# testes e ferramentas
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# --- MATLAB ----------------------------------------------------------------
+*.asv
+*.m~
+*.mex*
+*.slxc
+slprj/
+codegen/
+
+# --- dados e logs ----------------------------------------------------------
+*.log
+*.csv
+*.mat
+!exemplo*.mat
+
+# --- editores e SO ---------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

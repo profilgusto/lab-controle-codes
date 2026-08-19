@@ -1,0 +1,6 @@
+pycomm3==1.2.16
+
+# O tkinter nao vem do pip: e pacote do sistema.
+#   Ubuntu/Debian:  sudo apt install python3-tk
+#   Fedora:         sudo dnf install python3-tkinter
+# O grafico e desenhado num Canvas do proprio tkinter, entao nao precisa de matplotlib.
