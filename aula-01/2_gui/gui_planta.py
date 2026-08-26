@@ -1,18 +1,28 @@
 """GUI simples para operar a planta TQ CE117 (CLP Allen-Bradley / EtherNet-IP).
 
-Permite:
-  - ligar/desligar PUMP2 e VALVE em dois botoes ON-OFF (OFF = 0 %, ON = 100 %);
-  - acompanhar LT_ADC (nivel) num grafico desenhado em tempo de execucao.
+E a interface da Secao 1.3.4 do roteiro da Aula 1. Permite:
+  - ligar/desligar PUMP2 e S em dois botoes ON-OFF (OFF = 0 %, ON = 100 %);
+  - acompanhar LT em tempo real, em contas e em volts, que sao os dois valores
+    anotados na Tab. 1.5 (calibracao de LT) ao lado da leitura da regua;
+  - limpar o grafico entre a curva de subida e a de descida do nivel.
 
-Uso (a partir da raiz do projeto):
-    PYTHONPATH=libs python3 -W ignore 2_gui/gui_planta.py
-    PYTHONPATH=libs python3 -W ignore 2_gui/gui_planta.py --sim   (sem CLP, dados falsos)
-    PYTHONPATH=libs python3 -W ignore 2_gui/gui_planta.py --ip 200.200.200.25
+Intertravamento (OBS da Secao 1.2.3): a valvula S tem de estar aberta antes de
+qualquer acionamento de PUMP2 - acionar a bomba contra a valvula fechada
+pressuriza a linha e pode danificar a planta. O CLP nao implementa essa trava;
+quem a implementa e este programa, que recusa ligar PUMP2 com S fechada e
+desliga PUMP2 junto se S for fechada.
+
+Uso (a partir da pasta aula-01/):
+    python3 -W ignore 2_gui/gui_planta.py
+    python3 -W ignore 2_gui/gui_planta.py --sim   (sem CLP, dados falsos)
+    python3 -W ignore 2_gui/gui_planta.py --ip 200.200.200.25
+    python3 -W ignore 2_gui/gui_planta.py --janela 300  (janela inicial de 5 min)
 
 Requisito: tkinter (no Ubuntu: sudo apt install python3-tk).
 """
 
 import argparse
+import os
 import queue
 import sys
 import threading
@@ -21,26 +31,42 @@ import tkinter as tk
 from collections import deque
 from tkinter import ttk
 
+# `conversoes.py` fica em `comum/`, na raiz do repositorio: dois niveis acima
+# da pasta deste script.
+RAIZ = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(RAIZ, 'comum'))
+
+from conversoes import (V_FUNDO_CARTAO, conta_para_percentual,
+                        conta_para_volts, percentual_para_conta)
+
 PLC_IP = '200.200.200.25'
 
 PERIODO_S = 0.5      # intervalo entre leituras
-JANELA_S = 60.0      # largura da janela de tempo do grafico (mantem 1 min de dados)
+JANELA_S = 60.0      # largura inicial da janela de tempo do grafico
+# opcoes oferecidas na GUI: (rotulo, segundos)
+JANELAS = (('30 s', 30.0), ('1 min', 60.0), ('2 min', 120.0), ('5 min', 300.0),
+           ('10 min', 600.0), ('30 min', 1800.0))
+JANELA_MAX_S = max(s for _r, s in JANELAS)   # historico guardado em memoria
 DAC_MAX = 32767      # 2**15 - 1: o maior valor que cabe num INT do Logix
-VOLTS_FUNDO = 10.5   # cartao AD/DA: 32768 contas <-> 10.5 V
 
 TAG_PUMP2 = 'Program:MainProgram.PUMP2_DAC'
 TAG_VALVE = 'Program:MainProgram.VALVE_DAC'
 TAG_LT = 'Program:MainProgram.LT_ADC'
 
 
-def conta_para_volts(conta):
-    """Cartao AD/DA: -32768..32767 contas <-> -10.5..+10.5 V."""
-    return conta * VOLTS_FUNDO / 32768
+def rotulo_janela(segundos):
+    """Rotulo da janela: usa o nome da opcao conhecida, senao mostra os segundos."""
+    for rotulo, valor in JANELAS:
+        if abs(valor - segundos) < 1e-6:
+            return rotulo
+    return f'{segundos:.0f} s'
 
 
-def pct_para_conta(pct):
-    """0..100 % -> 0..32767 contas."""
-    return int(round(pct / 100.0 * DAC_MAX))
+def rotulo_tempo(t):
+    """Rotulo do eixo x: segundos ate 2 min, mm:ss dai em diante."""
+    if t < 120:
+        return f'{t:.0f}s'
+    return f'{int(t) // 60:d}:{int(t) % 60:02d}'
 
 
 # ---------------------------------------------------------------------------
@@ -192,25 +218,50 @@ class Grafico(tk.Canvas):
 
     MARGEM = (58, 12, 12, 30)   # esquerda, topo, direita, base
 
-    def __init__(self, master, **kw):
+    def __init__(self, master, janela_s=JANELA_S, **kw):
         super().__init__(master, background='white', highlightthickness=1,
                          highlightbackground='#b0b0b0', **kw)
         self.pontos = deque()
+        self.janela_s = float(janela_s)
         self.bind('<Configure>', lambda _e: self.redesenha())
+
+    def define_janela(self, janela_s):
+        """Troca a largura da janela de tempo e redesenha."""
+        self.janela_s = float(janela_s)
+        self._descarta_velhos()
+        self.redesenha()
+
+    def _descarta_velhos(self):
+        """Guarda sempre o maior historico oferecido, nao so a janela atual.
+
+        Assim, ao alargar a janela, os dados antigos reaparecem.
+        """
+        if not self.pontos:
+            return
+        t = self.pontos[-1][0]
+        limite = max(self.janela_s, JANELA_MAX_S)
+        while self.pontos and t - self.pontos[0][0] > limite:
+            self.pontos.popleft()
+
+    def _visiveis(self):
+        """Pontos dentro da janela de tempo atual."""
+        if not self.pontos:
+            return []
+        t_fim = self.pontos[-1][0]
+        return [(t, v) for t, v in self.pontos if t >= t_fim - self.janela_s]
 
     def acrescenta(self, t, volts):
         self.pontos.append((t, volts))
-        while self.pontos and t - self.pontos[0][0] > JANELA_S:
-            self.pontos.popleft()
+        self._descarta_velhos()
 
     def limpa(self):
         self.pontos.clear()
         self.redesenha()
 
-    def _faixa_y(self):
-        valores = [v for _t, v in self.pontos]
+    def _faixa_y(self, pontos):
+        valores = [v for _t, v in pontos]
         if not valores:
-            return 0.0, VOLTS_FUNDO
+            return 0.0, V_FUNDO_CARTAO
         lo, hi = min(valores), max(valores)
         if hi - lo < 0.5:                       # nao deixa a escala colapsar
             meio = (hi + lo) / 2
@@ -227,11 +278,12 @@ class Grafico(tk.Canvas):
         if x1 - x0 < 40 or y1 - y0 < 40:
             return
 
-        t_fim = self.pontos[-1][0] if self.pontos else JANELA_S
-        t_ini = max(0.0, t_fim - JANELA_S)
+        pontos = self._visiveis()
+        t_fim = pontos[-1][0] if pontos else self.janela_s
+        t_ini = max(0.0, t_fim - self.janela_s)
         if t_fim - t_ini < 1.0:
             t_fim = t_ini + 1.0
-        v_lo, v_hi = self._faixa_y()
+        v_lo, v_hi = self._faixa_y(pontos)
 
         def px(t):
             return x0 + (t - t_ini) / (t_fim - t_ini) * (x1 - x0)
@@ -250,16 +302,16 @@ class Grafico(tk.Canvas):
             t = t_ini + (t_fim - t_ini) * i / 4
             x = px(t)
             self.create_line(x, y0, x, y1, fill='#f2f2f2')
-            self.create_text(x, y1 + 6, text=f'{t:.0f}s', anchor='n',
+            self.create_text(x, y1 + 6, text=rotulo_tempo(t), anchor='n',
                              font=('TkDefaultFont', 8), fill='#555')
 
         self.create_rectangle(x0, y0, x1, y1, outline='#909090')
         self.create_text(x0 - 6, y0 - 4, text='LT (V)', anchor='se',
                          font=('TkDefaultFont', 8, 'bold'), fill='#333')
 
-        if len(self.pontos) >= 2:
+        if len(pontos) >= 2:
             traco = []
-            for t, v in self.pontos:
+            for t, v in pontos:
                 traco += [px(t), py(v)]
             self.create_line(*traco, fill='#0a6ebd', width=2)
             self.create_oval(traco[-2] - 3, traco[-1] - 3,
@@ -273,7 +325,7 @@ class Grafico(tk.Canvas):
 
 class Janela(tk.Tk):
 
-    def __init__(self, planta):
+    def __init__(self, planta, janela_s=JANELA_S):
         super().__init__()
         self.title('Planta TQ CE117 - operacao')
         self.geometry('760x520')
@@ -285,6 +337,11 @@ class Janela(tk.Tk):
         self.pump2_ligado = False
         self.valve_aberta = False
         self.zerar_ao_sair = tk.BooleanVar(value=True)
+        self.janela_s = float(janela_s)
+        # opcoes do seletor; um --janela fora da lista entra como opcao extra
+        self.janelas = dict(JANELAS)
+        self.janelas.setdefault(rotulo_janela(self.janela_s), self.janela_s)
+        self.janela_txt = tk.StringVar(value=rotulo_janela(self.janela_s))
 
         self._monta()
         self.protocol('WM_DELETE_WINDOW', self.encerra)
@@ -318,12 +375,19 @@ class Janela(tk.Tk):
         self.lb_eco = ttk.Label(medidas, text='PUMP2_DAC: --      VALVE_DAC: --')
         self.lb_eco.grid(row=1, column=0, sticky='w', pady=(4, 0))
 
-        ttk.Button(medidas, text='limpar grafico',
-                   command=lambda: self.gr.limpa()).grid(row=0, column=1, rowspan=2,
-                                                         sticky='e')
+        janela = ttk.Frame(medidas)
+        janela.grid(row=0, column=1, rowspan=2, sticky='e')
+        ttk.Label(janela, text='janela:').pack(side='left', padx=(0, 4))
+        self.cb_janela = ttk.Combobox(
+            janela, textvariable=self.janela_txt, width=8, state='readonly',
+            values=sorted(self.janelas, key=self.janelas.get))
+        self.cb_janela.pack(side='left', padx=(0, 10))
+        self.cb_janela.bind('<<ComboboxSelected>>', self._troca_janela)
+        ttk.Button(janela, text='limpar grafico',
+                   command=lambda: self.gr.limpa()).pack(side='left')
         medidas.columnconfigure(1, weight=1)
 
-        self.gr = Grafico(self)
+        self.gr = Grafico(self, janela_s=self.janela_s)
         self.gr.pack(fill='both', expand=True, padx=10, pady=6)
 
         self.lb_status = ttk.Label(self, text='iniciando...', anchor='w',
@@ -334,10 +398,13 @@ class Janela(tk.Tk):
 
     def _pinta_botoes(self):
         for botao, nome, ligado in ((self.bt_pump2, 'PUMP2', self.pump2_ligado),
-                                    (self.bt_valve, 'VALVE', self.valve_aberta)):
+                                    (self.bt_valve, 'S (VALVE)', self.valve_aberta)):
             pct = 100 if ligado else 0
+            rotulo = f'{nome}\n{"ON" if ligado else "OFF"}  ({pct} %)'
+            if botao is self.bt_pump2 and not self.valve_aberta:
+                rotulo = f'{nome}\nOFF  - abra S antes'
             botao.configure(
-                text=f'{nome}\n{"ON" if ligado else "OFF"}  ({pct} %)',
+                text=rotulo,
                 background='#1e9e4a' if ligado else '#c9ccd1',
                 activebackground='#26b356' if ligado else '#d8dbe0',
                 foreground='white' if ligado else 'black',
@@ -345,20 +412,49 @@ class Janela(tk.Tk):
 
     # -- acoes --------------------------------------------------------------
 
-    def _envia_setpoint(self):
+    def _troca_janela(self, _evento=None):
+        segundos = self.janelas.get(self.janela_txt.get())
+        if segundos is None:
+            return
+        self.janela_s = segundos
+        self.gr.define_janela(segundos)
+        self.cb_janela.selection_clear()
+
+    def _envia_setpoint(self, aviso=None):
+        # A ordem do par e (VALVE, PUMP2): a valvula vai sempre na frente.
         self.aquisicao.setpoint(
-            pct_para_conta(100 if self.valve_aberta else 0),
-            pct_para_conta(100 if self.pump2_ligado else 0),
+            percentual_para_conta(100 if self.valve_aberta else 0),
+            percentual_para_conta(100 if self.pump2_ligado else 0),
         )
         self._pinta_botoes()
+        if aviso:
+            self.lb_status.configure(text=aviso, foreground='#a11')
+        else:
+            self.lb_status.configure(
+                text=f'S {"aberta" if self.valve_aberta else "fechada"}   |   '
+                     f'PUMP2 {"ligado" if self.pump2_ligado else "desligado"}',
+                foreground='#333')
 
     def alterna_pump2(self):
+        # Intertravamento da OBS da Secao 1.2.3: PUMP2 so liga com S aberta.
+        if not self.pump2_ligado and not self.valve_aberta:
+            self.lb_status.configure(
+                text='PUMP2 bloqueado: abra a valvula S antes de acionar a bomba '
+                     '(a bomba contra a valvula fechada pressuriza a linha).',
+                foreground='#a11')
+            return
         self.pump2_ligado = not self.pump2_ligado
         self._envia_setpoint()
 
     def alterna_valve(self):
         self.valve_aberta = not self.valve_aberta
-        self._envia_setpoint()
+        aviso = None
+        if not self.valve_aberta and self.pump2_ligado:
+            # Fechar S com a bomba ligada e a mesma condicao proibida, vista do
+            # outro lado: desliga PUMP2 junto.
+            self.pump2_ligado = False
+            aviso = 'S fechada: PUMP2 desligado junto, pelo intertravamento.'
+        self._envia_setpoint(aviso)
 
     # -- atualizacao --------------------------------------------------------
 
@@ -369,12 +465,15 @@ class Janela(tk.Tk):
                 if evento[0] == 'amostra':
                     _, t, lt, pump2, valve = evento
                     volts = conta_para_volts(lt)
+                    # As duas colunas da Tab. 1.5 que saem do CLP: contas e V.
+                    # O percentual e do fundo de escala do INSTRUMENTO (10 V =
+                    # 31207 contas), nao do cartao (10,5 V = 32767).
                     self.lb_lt.configure(
                         text=f'LT:  {lt:6d} contas   =  {volts:+6.3f} V'
-                             f'   ({100 * lt / DAC_MAX:5.1f} % do fundo)')
+                             f'   ({conta_para_percentual(lt):5.1f} % do fundo)')
                     self.lb_eco.configure(
-                        text=f'PUMP2_DAC: {pump2:6d} ({100 * pump2 / DAC_MAX:5.1f} %)'
-                             f'      VALVE_DAC: {valve:6d} ({100 * valve / DAC_MAX:5.1f} %)')
+                        text=f'PUMP2_DAC: {pump2:6d} ({conta_para_percentual(pump2):5.1f} %)'
+                             f'      VALVE_DAC: {valve:6d} ({conta_para_percentual(valve):5.1f} %)')
                     self.gr.acrescenta(t, volts)
                     self.gr.redesenha()
                 else:
@@ -399,11 +498,13 @@ def main():
     ap.add_argument('--ip', default=PLC_IP, help=f'IP do CLP (padrao: {PLC_IP})')
     ap.add_argument('--sim', action='store_true',
                     help='usa um tanque simulado, sem tocar no CLP')
+    ap.add_argument('--janela', type=float, default=JANELA_S, metavar='S',
+                    help=f'janela inicial do grafico, em segundos (padrao: {JANELA_S:.0f})')
     args = ap.parse_args()
 
     planta = PlantaSimulada() if args.sim else PlantaCLP(args.ip)
     try:
-        Janela(planta).mainloop()
+        Janela(planta, janela_s=args.janela).mainloop()
     except tk.TclError as erro:
         sys.exit(f'ERRO ao abrir a janela ({erro}). Ha display grafico disponivel?')
 
