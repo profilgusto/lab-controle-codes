@@ -1,105 +1,104 @@
-# clp-ab-comms
+# lab-controle-codes
 
-Comunicacao com o CLP Allen-Bradley da planta **TQ CE117** (IP `200.200.200.25`)
-via EtherNet/IP, usando [`pycomm3`](https://github.com/ottowayi/pycomm3).
+Codigos das aulas do laboratorio de controle. Cada aula tem sua propria pasta,
+com os scripts e um `README.md` explicando o que roda e como rodar.
 
-O repositorio e organizado em tres niveis, do mais simples ao mais integrado:
+## Aulas
 
-| pasta | o que tem |
+| pasta | assunto |
 |---|---|
-| [`1_interacao-basica/`](1_interacao-basica) | scripts de linha de comando: le as tags e atua nos DACs |
-| [`2_gui/`](2_gui) | interface grafica em tkinter para operar a planta e ver o nivel em tempo real |
-| [`3_interacao-matlab/`](3_interacao-matlab) | daemon TCP/JSON que expoe o CLP para o MATLAB (ver o [README da pasta](3_interacao-matlab/README.md)) |
+| [`aula-01/`](aula-01) | comunicacao com o CLP Allen-Bradley da planta TQ CE117 via EtherNet/IP: leitura de tags, atuacao nos DACs, GUI em tkinter e ponte para o MATLAB |
 
-## A planta
+## Como usar
 
-Tags do `MainProgram`, todas `INT`:
-
-| tag | sentido | o que e |
-|---|---|---|
-| `PUMP2_DAC` | saida | acionamento da bomba 2 |
-| `VALVE_DAC` | saida | abertura da valvula |
-| `FT2_ADC` | entrada | vazao |
-| `PT_ADC` | entrada | pressao |
-| `TT5_ADC` | entrada | temperatura |
-| `LT_ADC` | entrada | nivel do tanque |
-
-O cartao AD/DA trabalha em contas: `-32768..32767` contas correspondem a
-`-10,5..+10,5 V`, ou seja `volts = contas * 10.5 / 32768`.
-
-> **Cuidado com a faixa do INT.** `32768` nao cabe num `INT` e vira `-32768` no
-> CLP. Os scripts validam a faixa antes de escrever; as saidas usam
-> `0..32767` (0 a 100 %).
-
-## Instalacao
-
-Requer Python 3.8+.
+Clone o repositorio e entre na pasta da aula desejada; o `README.md` de la tem
+os requisitos, a instalacao e os comandos:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+git clone git@github.com:profilgusto/lab-controle-codes.git
+cd lab-controle-codes/aula-01
+```
+
+Os codigos em Python foram escritos para Python 3.13.4 (o `pyenv` abaixo cuida
+da instalacao dessa versao).
+
+## Instalando o Python com pyenv
+
+O [pyenv](https://github.com/pyenv/pyenv) permite instalar varias versoes do
+Python sem mexer na do sistema.
+
+**1. Instalar o pyenv**
+
+```bash
+# macOS (Homebrew)
+brew install pyenv
+
+# Linux (Ubuntu/Debian) - dependencias de compilacao + pyenv
+sudo apt update && sudo apt install -y build-essential libssl-dev zlib1g-dev \
+  libbz2-dev libreadline-dev libsqlite3-dev curl git libncursesw5-dev \
+  xz-utils tk-dev libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev
+curl -fsSL https://pyenv.run | bash
+```
+
+**2. Configurar o shell** (uma vez; troque `~/.zshrc` por `~/.bashrc` se usar
+bash) e reabrir o terminal:
+
+```bash
+echo 'export PYENV_ROOT="$HOME/.pyenv"' >> ~/.zshrc
+echo '[[ -d $PYENV_ROOT/bin ]] && export PATH="$PYENV_ROOT/bin:$PATH"' >> ~/.zshrc
+echo 'eval "$(pyenv init - zsh)"' >> ~/.zshrc
+exec "$SHELL"
+```
+
+**3. Instalar o Python 3.13.4 e defini-lo como global**
+
+```bash
+pyenv install 3.13.4
+pyenv global 3.13.4
+```
+
+**4. Conferir**
+
+```bash
+pyenv version      # deve mostrar 3.13.4 (set by ~/.pyenv/version)
+python --version   # Python 3.13.4
+```
+
+O `tkinter` (usado pela GUI da aula 01) e compilado junto com o Python. No
+Linux, instale o `tk-dev` **antes** do `pyenv install`; se esquecer, basta
+instalar o pacote e rodar `pyenv install 3.13.4` de novo.
+
+## Instalando as dependencias
+
+Cada pasta traz seu proprio `requirements.txt`. Crie um ambiente virtual
+dentro da pasta da aula e instale ali:
+
+```bash
+cd aula-01
+python -m venv .venv
+source .venv/bin/activate     # Windows: .venv\Scripts\activate
+
+pip install --upgrade pip
 pip install -r 1_interacao-basica/requirements.txt
 ```
 
-Cada pasta tem seu proprio `requirements.txt` (todas dependem apenas de
-`pycomm3==1.2.16`). A GUI precisa tambem do **tkinter**, que nao vem do pip:
+Para sair do ambiente virtual, `deactivate`. Se voce mesmo acrescentar
+bibliotecas, registre-as com:
 
 ```bash
-sudo apt install python3-tk      # Ubuntu/Debian
-sudo dnf install python3-tkinter # Fedora
+pip freeze > requirements.txt
 ```
 
-Os cabecalhos dos scripts mostram as chamadas com `PYTHONPATH=libs`, que serve
-para o caso de o `pycomm3` estar copiado numa pasta `libs/` local (maquina de
-laboratorio sem `pip`). Com o venv acima, o prefixo e dispensavel.
+## Organizacao
 
-O `-W ignore` so silencia os avisos de depreciacao do `pycomm3`.
-
-## Uso rapido
-
-**Ler todas as tags:**
-
-```bash
-python3 -W ignore 1_interacao-basica/ler_tags.py
+```
+lab-controle-codes/
+├── README.md      <- este arquivo
+├── aula-01/
+│   ├── README.md  <- instrucoes especificas da aula
+│   └── ...        <- codigos da aula
+└── aula-NN/       <- proximas aulas, mesma estrutura
 ```
 
-**Escrever nos DACs, esperar 2 s e ler de volta:**
-
-```bash
-python3 -W ignore 1_interacao-basica/atua_e_le.py 12000 8000   # VALVE, PUMP2
-python3 -W ignore 1_interacao-basica/atua_e_le.py              # pergunta na tela
-```
-
-**Interface grafica** (botoes ON/OFF para bomba e valvula, grafico do nivel):
-
-```bash
-python3 -W ignore 2_gui/gui_planta.py
-python3 -W ignore 2_gui/gui_planta.py --sim   # tanque simulado, sem tocar no CLP
-python3 -W ignore 2_gui/gui_planta.py --ip 200.200.200.25
-```
-
-O modo `--sim` e util para testar a interface longe do laboratorio.
-
-**MATLAB** (num terminal, o daemon; no MATLAB, o script):
-
-```bash
-python3 -W ignore 3_interacao-matlab/daemon_clp.py
-```
-
-```matlab
->> cd 3_interacao-matlab
->> exemplo_clp
-```
-
-Os detalhes do protocolo JSON estao no
-[README de `3_interacao-matlab/`](3_interacao-matlab/README.md).
-
-## Rede
-
-O CLP responde em `200.200.200.25`. A maquina precisa estar na mesma rede
-(por exemplo `200.200.200.10/24`) e com o EtherNet/IP liberado no firewall.
-Para checar antes de rodar qualquer script:
-
-```bash
-ping -c 3 200.200.200.25
-```
+Ao adicionar uma aula nova, crie a pasta `aula-NN/` com seu proprio
+`README.md` e acrescente uma linha na tabela de aulas acima.
