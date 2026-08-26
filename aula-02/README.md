@@ -56,6 +56,9 @@ python3 -W ignore 1_ensaio/registra_ensaio.py -T 2 -o esvaziamento.csv
 aberto, o esvaziamento dura cerca de 50 s, e um periodo maior renderia poucos
 pontos para o ajuste.
 
+`--ip` aponta para outro CLP, caso a bancada nao esteja no
+`200.200.200.25` de sempre.
+
 Ctrl+C encerra quando o nivel estabilizar. O CSV e gravado linha a linha, entao
 continua valido mesmo se o ensaio for interrompido.
 
@@ -106,8 +109,8 @@ python3 -W ignore 1_ensaio/registra_ensaio.py --degrau \
   e da ordem de 20 s, e o acomodamento (~4 tau) leva perto de 80 s - por isso
   `-d 180`, que cobre a tabela inteira ate `t = +90 s`;
 - `--valve` (padrao 100 %) e escrito **antes** de `PUMP2`, mantendo o
-  intertravamento de seguranca da Aula 1: a valvula `S` nunca fica fechada com
-  a bomba acionada;
+  [intertravamento de seguranca da Aula 1](../aula-01/README.md#seguranca-s-antes-de-pump2):
+  a valvula `S` nunca fica fechada com a bomba acionada;
 - `-d` encerra sozinho; sem ele, o ensaio vai ate o Ctrl+C.
 
 ## O CSV gerado
