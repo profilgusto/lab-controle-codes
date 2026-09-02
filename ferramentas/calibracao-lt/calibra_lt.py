@@ -127,7 +127,10 @@ def main():
     print(f'Arquivo         : {args.csv}')
     print(f'Pontos medidos  : {len(h)} (h de {h.min():.0f} a {h.max():.0f} mm)')
     print()
-    print(f'{"grau":>4}   {"RMSE [mm]":>10}   {"erro max [mm]":>14}   {"R²":>8}')
+    # "R2" e nao "R²": o glifo unicode do sobrescrito nao tem a mesma largura
+    # de um digito normal em varias fontes monoespacadas de terminal, o que
+    # desalinha a coluna com o cabecalho.
+    print(f'{"grau":>4}   {"RMSE [mm]":>10}   {"erro max [mm]":>14}   {"R2":>8}')
 
     ajustes = {}
     for grau in (1, 2, 3):
@@ -136,10 +139,13 @@ def main():
         print(f'{grau:>4}   {rmse:>10.2f}   {erro_max:>14.2f}   {r2:>8.5f}')
 
     print()
-    print('Equacoes ajustadas (h em mm, N = leitura de LT em contas):')
+    print('Equacoes ajustadas (h em mm, N = leitura de LT em contas). O vetor a direita tem os')
+    print('mesmos coeficientes, do maior grau para o menor, prontos para colar (um por campo) em')
+    print('"Ajustar calibracao de LT", no hub_planta.py:')
     for grau in (1, 2, 3):
         coefs = ajustes[grau][0]
-        print(f'  grau {grau}: {formata_polinomio(coefs)}')
+        vetor = '[' + ', '.join(repr(float(c)) for c in coefs) + ']'
+        print(f'  grau {grau}: {formata_polinomio(coefs)}    coefs: {vetor}')
 
     coefs, rmse, erro_max, r2 = ajustes[args.grau]
     print()

@@ -613,18 +613,32 @@ class Grafico(tk.Canvas):
             pontos_alt = self._visiveis_altura()
             if pontos_alt:
                 valores_alt = [v for _t, v in pontos_alt]
-                alt_lo, alt_hi = min(valores_alt), max(valores_alt)
-                margem_alt = max(5.0, (alt_hi - alt_lo) * 0.1)
-                alt_lo -= margem_alt
-                alt_hi += margem_alt
+                alt_min, alt_max = min(valores_alt), max(valores_alt)
             else:
-                alt_lo, alt_hi = 0.0, 250.0
+                alt_min, alt_max = 0.0, 250.0
+            margem_alt = max(5.0, (alt_max - alt_min) * 0.1)
+            hi_alvo = alt_max + margem_alt
+            lo_alvo = alt_min - margem_alt
+
+            # O "0" deste eixo (h) e o "0 %" do eixo a esquerda (v_lo=-5,
+            # v_hi=105) tem de cair na mesma linha horizontal, para que as
+            # duas escalas comparem visualmente a partir da mesma base. Isso
+            # significa reservar, abaixo do 0 de h, a MESMA fracao da altura
+            # do grafico que o eixo esquerdo reserva abaixo do seu 0 (a
+            # faixa de -5 a 0, dentro de -5..105) - dai alt_lo nao ser
+            # livre: e sempre -frac0 * (alt_hi - alt_lo).
+            frac0 = -v_lo / (v_hi - v_lo)
+            escala = max(hi_alvo, 1.0) / (1.0 - frac0)
+            if lo_alvo < 0.0:
+                escala = max(escala, -lo_alvo / frac0)
+            alt_hi = escala * (1.0 - frac0)
+            alt_lo = -escala * frac0
 
             def py_alt(v):
                 return y1 - (v - alt_lo) / (alt_hi - alt_lo) * (y1 - y0)
 
             for frac in (0.0, 0.25, 0.5, 0.75, 1.0):
-                v = alt_lo + frac * (alt_hi - alt_lo)
+                v = frac * alt_hi
                 self.create_text(x1 + 6, py_alt(v), text=f'{v:.0f}', anchor='w',
                                  font=('TkDefaultFont', 8), fill=COR_ALTURA)
             self.create_text(x1 + 6, y0 - 10, text='h [mm]', anchor='w',
@@ -930,9 +944,25 @@ class AbaAula1(AbaBase):
         ttk.Button(botoes, text='ajustar (graus 1-3) e mostrar coeficientes',
                    command=self._ajusta).pack(side='left', padx=(8, 0))
 
-        self.txt_resultado = tk.Text(calib, height=8, wrap='word', font=('TkFixedFont', 9))
-        self.txt_resultado.grid(row=4, column=0, columnspan=6, sticky='nsew', pady=(8, 0))
+        # `wrap='none'` (nao 'word'): a tabela de RMSE/erro max/R2 e as
+        # equacoes usam espacamento fixo para alinhar colunas, e isso so
+        # funciona se a linha nunca for quebrada ao meio - quebrar por
+        # palavra (como no padrao antigo) desalinhava o cabecalho em
+        # relacao aos valores sempre que o painel ficava mais estreito que a
+        # linha mais longa. Uma barra horizontal cobre o que nao couber.
+        quadro_resultado = ttk.Frame(calib)
+        quadro_resultado.grid(row=4, column=0, columnspan=6, sticky='nsew', pady=(8, 0))
+        quadro_resultado.rowconfigure(0, weight=1)
+        quadro_resultado.columnconfigure(0, weight=1)
         calib.rowconfigure(4, weight=1)
+
+        self.txt_resultado = tk.Text(quadro_resultado, height=8, wrap='none',
+                                     font=('TkFixedFont', 9))
+        barra_h = ttk.Scrollbar(
+            quadro_resultado, orient='horizontal', command=self.txt_resultado.xview)
+        self.txt_resultado.configure(xscrollcommand=barra_h.set)
+        self.txt_resultado.grid(row=0, column=0, sticky='nsew')
+        barra_h.grid(row=1, column=0, sticky='we')
 
     def _adiciona_ponto(self):
         lt_atual = self.app.painel_leituras.ultimas.get('LT')
@@ -1030,7 +1060,10 @@ class AbaAula1(AbaBase):
         contas = np.array([p[1] for p in self._pontos])
         ss_tot = float(np.sum((h - h.mean()) ** 2))
 
-        linhas = [f'{"grau":>4} {"RMSE [mm]":>10} {"erro max [mm]":>14} {"R²":>8}']
+        # "R2" e nao "R²": o glifo unicode do sobrescrito nao tem a mesma
+        # largura de um digito normal em varias fontes monoespacadas
+        # (TkFixedFont incluida), o que desalinha a coluna com o cabecalho.
+        linhas = [f'{"grau":>4} {"RMSE [mm]":>10} {"erro max [mm]":>14} {"R2":>8}']
         coefs_por_grau = {}
         coefs_grau3 = None
         for grau in (1, 2, 3):
@@ -1046,9 +1079,13 @@ class AbaAula1(AbaBase):
                 coefs_grau3 = coefs
 
         linhas.append('')
-        linhas.append('Equacoes ajustadas (h em mm, N = leitura de LT em contas):')
+        linhas.append('Equacoes ajustadas (h em mm, N = leitura de LT em contas). O vetor a direita')
+        linhas.append('tem os mesmos coeficientes, do maior grau para o menor - selecione um numero')
+        linhas.append('por vez e cole no campo correspondente de "Ajustar calibracao de LT":')
         for grau in (1, 2, 3):
-            linhas.append(f'  grau {grau}: {_formata_polinomio(coefs_por_grau[grau])}')
+            coefs = coefs_por_grau[grau]
+            vetor = '[' + ', '.join(repr(float(c)) for c in coefs) + ']'
+            linhas.append(f'  grau {grau}: {_formata_polinomio(coefs)}    coefs: {vetor}')
 
         linhas.append('')
         linhas.append('Cole em comum/conversoes.py, em LT_COEFS_H_DE_CONTAS:')
