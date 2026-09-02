@@ -1383,6 +1383,10 @@ class Janela(tk.Tk):
         self.bt_exportar = ttk.Button(
             janela, text='exportar dados', command=self._alterna_exportacao)
         self.bt_exportar.pack(side='left', padx=(6, 0))
+        self.lb_exportar_dica = ttk.Label(
+            janela, text='selecione com o mouse a faixa de tempo a ser exportada no grafico abaixo',
+            foreground='#555', font=('TkDefaultFont', 8))
+        # so aparece durante a selecao (ver _alterna_exportacao/_exporta_janela)
 
         linha_series = ttk.Frame(quadro_grafico)
         linha_series.pack(fill='x', pady=(4, 0))
@@ -1569,6 +1573,7 @@ class Janela(tk.Tk):
         if self.gr.selecionando:
             self.gr.desativa_selecao()
             self.bt_exportar.configure(text='exportar dados')
+            self.lb_exportar_dica.pack_forget()
             self.lb_status.configure(text='selecao cancelada.', foreground='#333')
             return
 
@@ -1584,12 +1589,14 @@ class Janela(tk.Tk):
 
         self.gr.ativa_selecao(self._exporta_janela)
         self.bt_exportar.configure(text='cancelar selecao')
+        self.lb_exportar_dica.pack(side='left', padx=(8, 0))
         self.lb_status.configure(
             text='arraste o mouse sobre o grafico para selecionar a janela a exportar.',
             foreground='#333')
 
     def _exporta_janela(self, t_ini, t_fim):
         self.bt_exportar.configure(text='exportar dados')
+        self.lb_exportar_dica.pack_forget()
         t_ini, t_fim = min(t_ini, t_fim), max(t_ini, t_fim)
         linhas = [(t, valores) for t, valores in self._historico if t_ini - 1e-6 <= t <= t_fim + 1e-6]
         if not linhas:
