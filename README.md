@@ -1,29 +1,37 @@
 # lab-controle-codes
 
-Codigos das aulas do laboratorio de controle. Cada aula tem sua propria pasta,
-com os scripts e um `README.md` explicando o que roda e como rodar.
+Codigos do laboratorio de controle: a planta TQ CE117 e operada por uma unica
+GUI, com uma aba por aula (`ensaios-gui/`); scripts de analise pos-ensaio que
+nao precisam da planta ligada ficam em `ferramentas/`; e as conversoes entre
+contas do CLP e unidades de engenharia ficam numa biblioteca compartilhada
+(`comum/`).
 
-## Aulas
+## Pastas
 
 | pasta | assunto |
 |---|---|
-| [`comum/`](comum) | biblioteca compartilhada por todas as aulas (conversoes contas <-> volts <-> unidades de engenharia) |
-| [`aula-01/`](aula-01) | comunicacao com o CLP Allen-Bradley da planta TQ CE117 via EtherNet/IP: leitura de tags, atuacao nos DACs, GUI em tkinter e ponte para o MATLAB |
-| [`aula-02/`](aula-02) | modelagem analitica do tanque de processo: registro de ensaios com marcacao de tempo e estimacao da constante da lei de Torricelli |
+| [`ensaios-gui/`](ensaios-gui) | **hub de ensaios**: uma unica GUI em tkinter, com uma aba por aula, para nao precisar alternar entre varios scripts de linha de comando. Mantem a unica conexao com o CLP, mostra um grafico ao vivo de `LT`/`FT2`/`PUMP2`/`VALVE` e da os sliders de comando manual |
+| [`ferramentas/`](ferramentas) | scripts de apoio que trabalham sobre os CSVs gravados pelo hub (calibracao de `LT`, ajuste da constante de Torricelli, identificacao de um modelo de primeira ordem com atraso a partir da escada de degraus) ou que dao um caminho alternativo de acesso ao CLP (ponte para o MATLAB) |
+| [`comum/`](comum) | biblioteca compartilhada: conversoes contas <-> volts <-> unidades de engenharia, inclusive a calibracao (nao linear) de `LT` |
 
 ## Como usar
 
-Clone o repositorio e entre na pasta da aula desejada; o `README.md` de la tem
-os requisitos, a instalacao e os comandos:
-
 ```bash
 git clone git@github.com:profilgusto/lab-controle-codes.git
-cd lab-controle-codes/aula-01
+cd lab-controle-codes/ensaios-gui
+python3 -W ignore hub_planta.py --sim   # sem CLP, tanque simulado
 ```
 
-As aulas sao independentes entre si: da para comecar por qualquer uma, desde
-que a calibracao de `LT` em `comum/conversoes.py` (levantada na Aula 1) esteja
-preenchida com os coeficientes da sua bancada.
+Comece pelo hub (`ensaios-gui/`, ver o [README de la](ensaios-gui/README.md))
+- e ele quem tem as ferramentas de ensaio de cada aula, organizadas em abas.
+As ferramentas de `ferramentas/` (calibracao de `LT`, ajuste de Torricelli,
+identificacao de degrau, ponte para o MATLAB) sao independentes entre si e do
+hub; use-as quando precisar.
+
+A calibracao (nao linear) de `LT` em `comum/conversoes.py` (levantada na
+Aula 1, com a aba "Aula 1" do hub ou com `ferramentas/calibracao-lt/
+calibra_lt.py`) precisa estar preenchida com os coeficientes da sua bancada
+antes de qualquer ensaio que dependa de `h` em mm.
 
 Os codigos em Python foram escritos para Python 3.13.4 (o `pyenv` abaixo cuida
 da instalacao dessa versao).
@@ -41,7 +49,7 @@ Python sem mexer na do sistema. Siga o guia oficial do seu sistema:
 
 No Linux e no macOS, instale antes as bibliotecas de compilacao listadas em
 [Suggested build environment](https://github.com/pyenv/pyenv/wiki#suggested-build-environment)
-- e delas que sai o `tkinter`, usado pela GUI da aula 01. Nao esqueca de
+- e delas que sai o `tkinter`, usado pelo hub. Nao esqueca de
 [configurar o shell](https://github.com/pyenv/pyenv#b-set-up-your-shell-environment-for-pyenv)
 e reabrir o terminal ao final.
 
@@ -62,23 +70,20 @@ python --version   # Python 3.13.4
 ## Instalando as dependencias
 
 Cada pasta traz seu proprio `requirements.txt`. Crie um ambiente virtual
-dentro da pasta da aula e instale ali:
+dentro da pasta e instale ali:
 
 ```bash
-cd aula-01
+cd ensaios-gui
 python -m venv .venv
 source .venv/bin/activate     # Windows: .venv\Scripts\activate
 
 pip install --upgrade pip
-pip install -r 1_interacao-basica/requirements.txt
+pip install -r requirements.txt
 ```
 
-Se a aula tiver mais de uma pasta de codigo, os arquivos podem ser instalados
-de uma vez (na aula 02, por exemplo,
-`pip install -r 1_ensaio/requirements.txt -r 2_ajuste/requirements.txt`). Tudo
-o que fala com o CLP depende so de `pycomm3`; a GUI da aula 01 pede tambem o
-**tkinter**, que vem do sistema e nao do pip, e o ajuste da aula 02 usa `numpy`
-e `matplotlib`.
+Tudo o que fala com o CLP depende so de `pycomm3`; o hub e a calibracao de
+`LT` pedem tambem **tkinter** e `numpy` respectivamente (`tkinter` vem do
+sistema, nao do pip), e o ajuste de Torricelli usa `numpy` e `matplotlib`.
 
 Para sair do ambiente virtual, `deactivate`. Se voce mesmo acrescentar
 bibliotecas, registre-as com:
@@ -91,35 +96,29 @@ pip freeze > requirements.txt
 
 ```
 lab-controle-codes/
-├── README.md                 <- este arquivo
+├── README.md                    <- este arquivo
 ├── comum/
-│   └── conversoes.py         <- modulo compartilhado por todas as aulas
-├── aula-01/
-│   ├── README.md             <- instrucoes especificas da aula
-│   ├── 1_interacao-basica/   <- ler_tags.py, atua_e_le.py
-│   ├── 2_gui/                <- gui_planta.py (tkinter)
-│   └── 3_interacao-matlab/   <- daemon_clp.py, exemplo_clp.m (+ README proprio)
-├── aula-02/
+│   └── conversoes.py            <- modulo compartilhado por todo o codigo
+├── ensaios-gui/
 │   ├── README.md
-│   ├── 1_ensaio/             <- registra_ensaio.py
-│   └── 2_ajuste/             <- ajusta_torricelli.py
-└── aula-NN/                  <- proximas aulas, mesma estrutura
+│   └── hub_planta.py            <- GUI unica, uma aba de ensaios por aula
+└── ferramentas/
+    ├── README.md
+    ├── calibracao-lt/           <- calibra_lt.py (ajuste nao linear de LT)
+    ├── ajuste-torricelli/       <- ajusta_torricelli.py
+    ├── identificacao-degrau/    <- identifica_degrau.py (FOPDT da escada de degraus)
+    └── interacao-matlab/        <- daemon_clp.py, exemplo_clp.m (+ README proprio)
 ```
-
-Cada pasta de codigo traz seu proprio `requirements.txt`; pastas com material
-mais extenso (como `aula-01/3_interacao-matlab/`) tem tambem um `README.md`
-proprio, ligado a partir do README da aula.
-
-Ao adicionar uma aula nova, crie a pasta `aula-NN/` com seu proprio
-`README.md` e acrescente uma linha na tabela de aulas acima.
 
 ## A biblioteca compartilhada `comum/`
 
 `comum/conversoes.py` concentra as conversoes entre as contas do cartao AD/DA
 do CLP e as grandezas de engenharia da planta (tensao, nivel `h` em mm, vazao
-`q_in` em L/min), inclusive a **curva de calibracao de `LT`** levantada na
-Aula 1. Ele nao depende de nada fora da biblioteca padrao, e e importado pelos
-codigos de todas as aulas - por isso a calibracao se corrige num lugar so.
+`q_in` em L/min), inclusive a **curva de calibracao (nao linear) de `LT`**
+levantada na Aula 1. Ele nao depende de nada fora da biblioteca padrao (a
+avaliacao do polinomio de calibracao e feita a mao, sem numpy), e e importado
+por `ensaios-gui/hub_planta.py` - por isso a calibracao se corrige num lugar
+so.
 
 Para ver a tabela de conversao:
 
@@ -127,14 +126,24 @@ Para ver a tabela de conversao:
 python3 comum/conversoes.py
 ```
 
-Os scripts acrescentam `comum/` ao `sys.path` sozinhos, a partir do proprio
-caminho do arquivo; nao e preciso `PYTHONPATH` nem instalar nada. Um script
-novo, em `aula-NN/<pasta>/`, so precisa repetir o cabecalho:
+O hub acrescenta `comum/` ao `sys.path` sozinho, a partir do proprio caminho
+do arquivo; nao e preciso `PYTHONPATH` nem instalar nada:
 
 ```python
 import os, sys
-RAIZ = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(RAIZ, 'comum'))
 
 from conversoes import contas_para_altura
 ```
+
+## Adicionando uma aula nova
+
+As ferramentas de ensaio de uma aula nova entram como uma aba do hub, nao
+como uma pasta `aula-NN/` separada: em `ensaios-gui/hub_planta.py`, troque o
+placeholder `AbaEmDesenvolvimento` daquela aula por uma classe `AbaAulaN`
+propria, seguindo o padrao de `AbaAula1`/`AbaAula2`/`AbaAula3` no mesmo arquivo (uma
+aba por aula, comunicando com a planta so atraves de `Janela.aplica_comando`
+e do fluxo de amostras de `Aquisicao`). Scripts de analise pos-ensaio que a
+aula precisar (sem depender da planta ligada) entram como uma pasta nova em
+`ferramentas/`.

@@ -3,8 +3,17 @@
 Concentra as conversoes da Eq. (1) e da Eq. (2) da Aula 1 (cartao AD/DA) e a
 curva de calibracao de LT levantada experimentalmente na Aula 1.
 
+O transmissor de nivel LT e classificado como NAO LINEAR pelo fabricante
+(Tab. 1, p. 16 de tecquipment2008), ao contrario de TT, FT e PT. A conversao
+`contas_para_altura` usa por isso um polinomio (nao uma reta) ajustado aos
+pontos da Tab. 1.6 (calibracao de LT, Aula 1); ver `ferramentas/calibracao-lt/
+calibra_lt.py` no repositorio de codigos para reajustar esses coeficientes com
+os dados da sua propria bancada.
+
 Modulo compartilhado por todas as aulas: mora em `comum/`, na raiz do
-repositorio, e nao depende de nada fora da biblioteca padrao. Os scripts o
+repositorio, e nao depende de nada fora da biblioteca padrao (os scripts de
+calibracao usam numpy, mas so para *gerar* os coeficientes abaixo; em tempo de
+execucao este modulo so faz avaliacao de polinomio, sem numpy). Os scripts o
 alcancam acrescentando `comum/` ao `sys.path` e importando pelo nome:
 
     import os, sys
@@ -34,13 +43,33 @@ INT_MIN = 0
 INT_MAX = 32767  # 2**15 - 1: escrever 32768 estoura o INT e vira -32768
 
 # --- calibracao do transmissor de nivel LT ---------------------------------
-# Reta h[mm] = LT_A * V + LT_B ajustada aos pontos da Tab. 1.5 (Aula 1).
-# >>> SUBSTITUA pelos coeficientes que a SUA bancada produziu. <<<
-# Os valores abaixo sao apenas o comportamento NOMINAL da Tab. 1.1 (0 V tanque
-# vazio, 10 V tanque cheio), com os ~180 mm de coluna util observados no ensaio
-# piloto da Aula 2. Servem so para o modo --sim.
-LT_A = 18.0   # mm por volt
-LT_B = 0.0    # mm
+# LT e NAO LINEAR (Tab. 1 do manual, tecquipment2008): uma reta erra ate ~26 mm
+# (~13 % do fundo de 200 mm) nos dados piloto, contra ~2 a 3 mm de um cubico.
+# `contas_para_altura` por isso avalia um polinomio de 3o grau em h(contas),
+# nao uma reta; `altura_para_contas` e o polinomio inverso h(contas) -> contas,
+# usado so pelo simulador `--sim`, que precisa gerar leituras a partir de um h
+# conhecido.
+#
+# Os coeficientes abaixo (mm por conta^3..0, e conta por mm^3..0) vem do
+# ajuste cubico aos 20 pontos piloto de esvaziamento da Tab. 1.6 da Aula 1
+# (h de 10 a 200 mm em passos de 10 mm, vazao nula em cada ponto).
+# >>> SUBSTITUA pelos coeficientes que a SUA bancada produziu, com
+# `ferramentas/calibracao-lt/calibra_lt.py`. <<<
+LT_COEFS_H_DE_CONTAS = (6.202235476946863e-12, -1.726047648882776e-07,
+                        0.005574400874448534, -4.043696100608721)
+LT_COEFS_CONTAS_DE_H = (0.0006561251225405194, -0.8058853830693901,
+                        295.18035453277054, -429.73787409700026)
+
+# Ajuste valido so dentro da faixa calibrada (h de 10 a 200 mm nos dados
+# piloto); fora dela e extrapolacao do polinomio, sem garantia fisica.
+
+
+def _horner(coefs, x):
+    """Avalia um polinomio em `x` a partir dos coeficientes, do maior grau ao menor."""
+    resultado = 0.0
+    for c in coefs:
+        resultado = resultado * x + c
+    return resultado
 
 # --- transmissor de vazao FT2 ----------------------------------------------
 FT2_LPM_POR_VOLT = 1.0  # 1 L/min por volt (Tab. 1.1 da Aula 1)
@@ -63,10 +92,22 @@ def volts_para_conta(volts):
 def contas_para_altura(conta):
     """Converte a leitura de LT_ADC, em contas, na altura h do nivel, em mm.
 
-    Usa a reta de calibracao levantada na Aula 1, e nao a conversao nominal
-    em porcentagem de enchimento.
+    Usa o polinomio cubico de calibracao levantado na Aula 1 (LT e um sensor
+    NAO LINEAR, ver comentario acima), e nao a conversao nominal em
+    porcentagem de enchimento nem uma reta.
     """
-    return LT_A * conta_para_volts(conta) + LT_B
+    return _horner(LT_COEFS_H_DE_CONTAS, conta)
+
+
+def altura_para_contas(h_mm):
+    """Inversa aproximada de `contas_para_altura`: h [mm] -> contas de LT_ADC.
+
+    Usada apenas pelo simulador (`--sim`), que precisa gerar uma leitura de
+    LT a partir do h fisico simulado. Nao e a inversa algebrica exata do
+    polinomio de `contas_para_altura`, mas um segundo ajuste cubico
+    independente na direcao h -> contas, sobre os mesmos pontos piloto.
+    """
+    return _horner(LT_COEFS_CONTAS_DE_H, h_mm)
 
 
 def contas_para_vazao(conta):

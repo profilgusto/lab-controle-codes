@@ -9,22 +9,23 @@ tem solucao analitica (Eq. 11)
     sqrt(h(t)) = sqrt(h(0)) - (k / 2A) t,
 
 ou seja, sqrt(h) decai LINEARMENTE no tempo, mesmo h(t) nao sendo linear. Este
-programa le o CSV gerado por `1_ensaio/registra_ensaio.py`, calcula sqrt(h)
-ponto a ponto, ajusta uma reta por minimos quadrados com `numpy.polyfit` e
-devolve k = -2 A a, onde `a` e o coeficiente angular ajustado.
+programa le o CSV do ensaio de esvaziamento gerado pela aba "Aula 2" de
+`ensaios-gui/hub_planta.py`, calcula sqrt(h) ponto a ponto, ajusta uma reta
+por minimos quadrados com `numpy.polyfit` e devolve k = -2 A a, onde `a` e o
+coeficiente angular ajustado.
 
 A area A vem da medida de circunferencia da Secao 2.3.1 (D = C/pi,
 A = pi D^2/4); informe a circunferencia media, o diametro ou a propria area:
 
-    python3 2_ajuste/ajusta_torricelli.py esvaziamento.csv --circunferencia 358
-    python3 2_ajuste/ajusta_torricelli.py esvaziamento.csv --diametro 114
-    python3 2_ajuste/ajusta_torricelli.py esvaziamento.csv --area 10207
+    python3 ajuste-torricelli/ajusta_torricelli.py esvaziamento.csv --circunferencia 358
+    python3 ajuste-torricelli/ajusta_torricelli.py esvaziamento.csv --diametro 114
+    python3 ajuste-torricelli/ajusta_torricelli.py esvaziamento.csv --area 10207
 
 Perto de h = 0 o esvaziamento desacelera e a leitura de LT perde resolucao;
 use `--t-max` (e, se preciso, `--h-min`) para ajustar a reta so no trecho
 confiavel do ensaio:
 
-    python3 2_ajuste/ajusta_torricelli.py esvaziamento.csv -c 358 --t-max 55
+    python3 ajuste-torricelli/ajusta_torricelli.py esvaziamento.csv -c 358 --t-max 55
 
 Sem `--sem-grafico`, abre o grafico de sqrt(h) contra t com a reta ajustada
 sobreposta; `--figura arquivo.png` salva em vez de abrir.
@@ -46,7 +47,8 @@ def le_csv(caminho):
         if leitor.fieldnames is None or 't_s' not in leitor.fieldnames \
                 or 'h_mm' not in leitor.fieldnames:
             sys.exit(f'ERRO: {caminho} nao tem as colunas t_s e h_mm. '
-                     'Ele foi gerado por 1_ensaio/registra_ensaio.py?')
+                     'Ele foi gerado pelo ensaio de esvaziamento da aba '
+                     '"Aula 2" de ensaios-gui/hub_planta.py?')
         for linha in leitor:
             t.append(float(linha['t_s']))
             h.append(float(linha['h_mm']))

@@ -1,0 +1,9 @@
+pycomm3==1.2.16
+numpy
+
+# O tkinter nao vem do pip: e pacote do sistema.
+#   Ubuntu/Debian:  sudo apt install python3-tk
+#   Fedora:         sudo dnf install python3-tkinter
+# numpy e usado so pela calibracao de LT (Aba "Aula 1"), para o ajuste
+# polinomial (mesma conta de ferramentas/calibracao-lt/calibra_lt.py). O grafico
+# ao vivo e desenhado num Canvas do proprio tkinter, sem matplotlib.

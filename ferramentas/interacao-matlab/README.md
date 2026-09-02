@@ -1,4 +1,4 @@
-# 3_interacao-matlab
+# interacao-matlab
 
 Ponte entre o MATLAB e o CLP Allen-Bradley (TQ CE117, `200.200.200.25`) sem
 reimplementar EtherNet/IP: um daemon Python segura a sessao CIP aberta com o
@@ -31,7 +31,7 @@ MATLAB  --(TCP 5020, JSON/LF)-->  daemon_clp.py  --(EtherNet/IP)-->  CLP
 2. **MATLAB**:
 
    ```matlab
-   >> cd 3_interacao-matlab
+   >> cd interacao-matlab
    >> exemplo_clp
    ```
 
