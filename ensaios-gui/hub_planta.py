@@ -96,6 +96,25 @@ SERIES_GRAFICO = (
     ('VALVE', 'VALVE (valvula S)', '#a11'),
 )
 
+# A curva de altura do nivel (h, em mm) nao entra em SERIES_GRAFICO: ao
+# contrario das demais, ela nao e uma fracao do fundo de escala do
+# instrumento (0-100 %), e sim uma grandeza fisica em mm, com faixa propria.
+# Por isso o `Grafico` a desenha num eixo vertical secundario, a direita, so
+# quando uma calibracao de LT (grau + coeficientes) foi definida pelo botao
+# "Ajustar calibracao de LT" do `PainelLeituras`.
+ROTULO_ALTURA = 'h (nivel, mm)'
+COR_ALTURA = '#7b2d8e'
+
+
+def _avalia_polinomio(coefs, x):
+    """Avalia um polinomio em `x`, com `coefs` do maior grau ao menor
+    (convencao do `numpy.polyfit`/`numpy.polyval`, a mesma usada pelo
+    assistente de calibracao de LT e por `LT_COEFS_H_DE_CONTAS`)."""
+    resultado = 0.0
+    for c in coefs:
+        resultado = resultado * x + c
+    return resultado
+
 
 def rotulo_janela(segundos):
     for rotulo, valor in JANELAS:
@@ -108,6 +127,29 @@ def rotulo_tempo(t):
     if t < 120:
         return f'{t:.0f}s'
     return f'{int(t) // 60:d}:{int(t) % 60:02d}'
+
+
+def _formata_polinomio(coefs, variavel='N'):
+    """Formata coefs (grau mais alto primeiro, convencao numpy) como
+    'h(N) = a_n N^n + ... + a_1 N + a_0', com sinais e notacao cientifica."""
+    grau = len(coefs) - 1
+    termos = []
+    for i, a in enumerate(coefs):
+        expoente = grau - i
+        sinal = '-' if a < 0 else '+'
+        if expoente == 0:
+            corpo = f'{abs(a):.4e}'
+        elif expoente == 1:
+            corpo = f'{abs(a):.4e}·{variavel}'
+        else:
+            corpo = f'{abs(a):.4e}·{variavel}^{expoente}'
+        termos.append((sinal, corpo))
+
+    primeiro_sinal, primeiro_corpo = termos[0]
+    expressao = ('-' if primeiro_sinal == '-' else '') + primeiro_corpo
+    for sinal, corpo in termos[1:]:
+        expressao += f' {sinal} {corpo}'
+    return f'h({variavel}) = {expressao}  [mm]'
 
 
 # ---------------------------------------------------------------------------
@@ -286,7 +328,9 @@ class Aquisicao(threading.Thread):
 
 class Grafico(tk.Canvas):
 
-    MARGEM = (46, 30, 12, 30)   # esquerda, topo, direita, base
+    MARGEM = (46, 30, 46, 30)   # esquerda, topo, direita, base
+    # a margem direita so e usada de verdade quando a curva de altura (eixo
+    # secundario, em mm) esta disponivel; sobra em branco caso contrario.
 
     def __init__(self, master, janela_s=JANELA_S, **kw):
         super().__init__(master, background='white', highlightthickness=1,
@@ -295,6 +339,14 @@ class Grafico(tk.Canvas):
         self.visiveis = {chave: True for chave, _r, _c in SERIES_GRAFICO}
         self.janela_s = float(janela_s)
         self._fonte_legenda = tkfont.Font(font=('TkDefaultFont', 8))
+
+        # Curva de altura (h, mm), com eixo proprio - ver comentario de
+        # ROTULO_ALTURA/COR_ALTURA. So e desenhada depois que uma calibracao
+        # de LT for definida (`ativa_altura`); ate la fica alimentada (para
+        # nao perder historico) mas invisivel.
+        self.serie_altura = deque()
+        self.altura_disponivel = False
+        self.altura_visivel = True
 
         # Modo de visualizacao: 'linha' interpola os pontos amostrados com
         # uma reta cheia (comportamento historico); 'dispersao' marca cada
@@ -311,6 +363,7 @@ class Grafico(tk.Canvas):
         # copia ate a visualizacao ser retomada.
         self.pausado = False
         self._series_pausadas = None
+        self._altura_pausada = None
 
         # Selecao de uma janela de tempo a arrasto do mouse (usada pelo
         # botao "exportar dados"); `_geom` guarda a ultima geometria de
@@ -339,15 +392,29 @@ class Grafico(tk.Canvas):
         self.modo = 'dispersao' if self.modo == 'linha' else 'linha'
         self.redesenha()
 
+    def ativa_altura(self):
+        """Chamado quando uma calibracao de LT e definida pela primeira vez:
+        a partir daqui a curva de altura passa a poder ser desenhada."""
+        self.altura_disponivel = True
+        self.redesenha()
+
+    def define_visivel_altura(self, visivel):
+        self.altura_visivel = visivel
+        self.redesenha()
+
     def _descarta_velhos(self):
+        limite = max(self.janela_s, JANELA_MAX_S)
         for chave in self.series:
             pontos = self.series[chave]
             if not pontos:
                 continue
             t = pontos[-1][0]
-            limite = max(self.janela_s, JANELA_MAX_S)
             while pontos and t - pontos[0][0] > limite:
                 pontos.popleft()
+        if self.serie_altura:
+            t = self.serie_altura[-1][0]
+            while self.serie_altura and t - self.serie_altura[0][0] > limite:
+                self.serie_altura.popleft()
 
     def acrescenta(self, t, valores_pct):
         for chave, pct in valores_pct.items():
@@ -355,11 +422,18 @@ class Grafico(tk.Canvas):
                 self.series[chave].append((t, pct))
         self._descarta_velhos()
 
+    def acrescenta_altura(self, t, h_mm):
+        self.serie_altura.append((t, h_mm))
+        self._descarta_velhos()
+
     def limpa(self):
         for pontos in self.series.values():
             pontos.clear()
+        self.serie_altura.clear()
         if self._series_pausadas is not None:
             self._series_pausadas = {chave: [] for chave in self.series}
+        if self._altura_pausada is not None:
+            self._altura_pausada = []
         self.redesenha()
 
     # -- pausa da visualizacao ------------------------------------------
@@ -367,10 +441,12 @@ class Grafico(tk.Canvas):
     def pausa(self):
         self.pausado = True
         self._series_pausadas = {chave: list(pontos) for chave, pontos in self.series.items()}
+        self._altura_pausada = list(self.serie_altura)
 
     def retoma(self):
         self.pausado = False
         self._series_pausadas = None
+        self._altura_pausada = None
         self.redesenha()
 
     def _fonte(self, chave):
@@ -380,6 +456,18 @@ class Grafico(tk.Canvas):
 
     def _visiveis(self, chave):
         pontos = self._fonte(chave)
+        if not pontos:
+            return []
+        t_fim = pontos[-1][0]
+        return [(t, v) for t, v in pontos if t >= t_fim - self.janela_s]
+
+    def _fonte_altura(self):
+        if self.pausado and self._altura_pausada is not None:
+            return self._altura_pausada
+        return self.serie_altura
+
+    def _visiveis_altura(self):
+        pontos = self._fonte_altura()
         if not pontos:
             return []
         t_fim = pontos[-1][0]
@@ -518,6 +606,60 @@ class Grafico(tk.Canvas):
                              font=self._fonte_legenda, fill='#333')
             legenda_x += 14 + self._fonte_legenda.measure(rotulo) + 20
 
+        # Curva de altura (h, mm): eixo vertical proprio, a direita, com
+        # escala auto-ajustada aos pontos visiveis (nao 0-100 %, como as
+        # demais series). So aparece apos uma calibracao de LT ser definida.
+        if self.altura_disponivel and self.altura_visivel:
+            pontos_alt = self._visiveis_altura()
+            if pontos_alt:
+                valores_alt = [v for _t, v in pontos_alt]
+                alt_lo, alt_hi = min(valores_alt), max(valores_alt)
+                margem_alt = max(5.0, (alt_hi - alt_lo) * 0.1)
+                alt_lo -= margem_alt
+                alt_hi += margem_alt
+            else:
+                alt_lo, alt_hi = 0.0, 250.0
+
+            def py_alt(v):
+                return y1 - (v - alt_lo) / (alt_hi - alt_lo) * (y1 - y0)
+
+            for frac in (0.0, 0.25, 0.5, 0.75, 1.0):
+                v = alt_lo + frac * (alt_hi - alt_lo)
+                self.create_text(x1 + 6, py_alt(v), text=f'{v:.0f}', anchor='w',
+                                 font=('TkDefaultFont', 8), fill=COR_ALTURA)
+            self.create_text(x1 + 6, y0 - 10, text='h [mm]', anchor='w',
+                             font=('TkDefaultFont', 8, 'italic'), fill=COR_ALTURA)
+
+            if self.modo == 'dispersao':
+                if len(pontos_alt) >= 2:
+                    traco = [px(pontos_alt[0][0]), py_alt(pontos_alt[0][1])]
+                    for i in range(1, len(pontos_alt)):
+                        _t_ant, v_ant = pontos_alt[i - 1]
+                        t_atu, v_atu = pontos_alt[i]
+                        x_atu = px(t_atu)
+                        traco += [x_atu, py_alt(v_ant), x_atu, py_alt(v_atu)]
+                    self.create_line(*traco, fill=COR_ALTURA, width=1, dash=(3, 2))
+                raio = 5.5
+                for t, v in pontos_alt:
+                    x, y = px(t), py_alt(v)
+                    self.create_oval(x - raio, y - raio, x + raio, y + raio,
+                                     fill=COR_ALTURA, outline='')
+            else:
+                if len(pontos_alt) >= 2:
+                    traco = []
+                    for t, v in pontos_alt:
+                        traco += [px(t), py_alt(v)]
+                    self.create_line(*traco, fill=COR_ALTURA, width=2)
+                if pontos_alt:
+                    t_ult, v_ult = pontos_alt[-1]
+                    x, y = px(t_ult), py_alt(v_ult)
+                    self.create_oval(x - 3, y - 3, x + 3, y + 3, fill=COR_ALTURA, outline='')
+
+            self.create_rectangle(legenda_x, 8, legenda_x + 10, 18, fill=COR_ALTURA, outline='')
+            self.create_text(legenda_x + 14, 13, text=ROTULO_ALTURA, anchor='w',
+                             font=self._fonte_legenda, fill='#333')
+            legenda_x += 14 + self._fonte_legenda.measure(ROTULO_ALTURA) + 20
+
         self._geom = (x0, y0, x1, y1, t_ini, t_fim)
 
         if self.selecionando and self._sel_inicio is not None and self._sel_atual is not None:
@@ -597,12 +739,21 @@ class PainelLeituras(ttk.LabelFrame):
     Antes vivia dentro da aba da Aula 1; virou um painel proprio porque e
     util em qualquer aula, nao so na primeira - por isso mora fora do
     `ttk.Notebook`, ao lado do grafico, e nao dentro de uma aba.
+
+    Tambem concentra o botao "Ajustar calibracao de LT": o assistente da aba
+    da Aula 1 calcula os coeficientes (grau + polinomio, Secao 1.1.2.1), mas
+    e aqui que eles sao colados para virarem uma calibracao ativa na sessao,
+    usada tanto para converter a leitura de LT desta tabela quanto para
+    plotar e exportar a curva de altura no grafico ao vivo (ver `Janela`).
     """
 
-    def __init__(self, master, **kw):
+    def __init__(self, master, on_calibracao=None, **kw):
         super().__init__(master, text='Leitura de todas as tags (Tab. 1.3)', **kw)
         self.ultimas = {}   # {chave: conta}, atualizado a cada amostra
         self._rotulos = {}
+        self._on_calibracao = on_calibracao
+        self._calib_lt = None    # None = usa contas_para_altura da biblioteca
+        self._grau_lt = None
 
         cabecalhos = ('tag', 'contas', 'volts', '')
         for j, texto in enumerate(cabecalhos):
@@ -618,6 +769,100 @@ class PainelLeituras(ttk.LabelFrame):
             rot_extra.grid(row=i, column=3, sticky='w')
             self._rotulos[chave] = (rot_contas, rot_volts, rot_extra)
 
+        linha_calib = i + 1
+        ttk.Button(self, text='Ajustar calibração de LT',
+                  command=self._abre_dialogo_calibracao).grid(
+            row=linha_calib, column=0, columnspan=4, sticky='w', pady=(10, 2))
+        self.lb_calib = ttk.Label(
+            self, text='calibração de LT: biblioteca (conversoes.py)',
+            font=('TkDefaultFont', 8), foreground='#555')
+        self.lb_calib.grid(row=linha_calib + 1, column=0, columnspan=4, sticky='w')
+
+    def contas_para_altura_ativa(self, conta):
+        """h(conta) pela calibracao definida na sessao, ou pela biblioteca
+        (`comum/conversoes.py`) se nenhuma tiver sido definida ainda."""
+        if self._calib_lt is not None:
+            return _avalia_polinomio(self._calib_lt, conta)
+        return contas_para_altura(conta)
+
+    def _abre_dialogo_calibracao(self):
+        janela = tk.Toplevel(self)
+        janela.title('Ajustar calibração de LT')
+        janela.resizable(False, False)
+        janela.transient(self.winfo_toplevel())
+
+        ttk.Label(
+            janela,
+            text='Escolha o grau do polinômio h(N) ajustado na Seção 1.1.2.1\n'
+                 '(N = leitura de LT em contas) e cole os coeficientes calculados\n'
+                 'pelo assistente "ajustar (graus 1-3)" da aba Aula 1, do maior\n'
+                 'grau para o menor - a mesma ordem de LT_COEFS_H_DE_CONTAS.',
+            justify='left').grid(row=0, column=0, columnspan=2, sticky='w',
+                                 padx=10, pady=(10, 8))
+
+        var_grau = tk.IntVar(value=self._grau_lt or 3)
+        linha_grau = ttk.Frame(janela)
+        linha_grau.grid(row=1, column=0, columnspan=2, sticky='w', padx=10)
+        for grau in (1, 2, 3):
+            ttk.Radiobutton(
+                linha_grau, text=f'grau {grau}', variable=var_grau, value=grau,
+                command=lambda: _monta_campos_coefs()).pack(side='left', padx=(0, 12))
+
+        quadro_coefs = ttk.Frame(janela)
+        quadro_coefs.grid(row=2, column=0, columnspan=2, sticky='w', padx=10, pady=(8, 0))
+        vars_coefs = []
+
+        def _monta_campos_coefs():
+            for filho in quadro_coefs.winfo_children():
+                filho.destroy()
+            vars_coefs.clear()
+            grau = var_grau.get()
+            coefs_atuais = self._calib_lt if (self._calib_lt and self._grau_lt == grau) else None
+            for i in range(grau + 1):
+                expoente = grau - i
+                rotulo = f'a{expoente} (N^{expoente}):' if expoente else 'a0 (termo constante):'
+                ttk.Label(quadro_coefs, text=rotulo).grid(row=i, column=0, sticky='w', pady=1)
+                valor_inicial = repr(coefs_atuais[i]) if coefs_atuais else ''
+                var = tk.StringVar(value=valor_inicial)
+                ttk.Entry(quadro_coefs, textvariable=var, width=22).grid(
+                    row=i, column=1, sticky='w', padx=(6, 0), pady=1)
+                vars_coefs.append(var)
+
+        _monta_campos_coefs()
+
+        def _confirma():
+            grau = var_grau.get()
+            try:
+                coefs = tuple(float(v.get()) for v in vars_coefs)
+            except ValueError:
+                messagebox.showerror(
+                    'Coeficiente inválido', 'Todos os coeficientes devem ser números '
+                    '(use ponto decimal, como na saída do assistente de calibração).',
+                    parent=janela)
+                return
+            self._calib_lt = coefs
+            self._grau_lt = grau
+            self.lb_calib.configure(
+                text=f'calibração de LT: definida na sessão (grau {grau})')
+            if self._on_calibracao is not None:
+                self._on_calibracao(grau, coefs)
+            janela.destroy()
+
+        def _restaura_biblioteca():
+            self._calib_lt = None
+            self._grau_lt = None
+            self.lb_calib.configure(text='calibração de LT: biblioteca (conversoes.py)')
+            if self._on_calibracao is not None:
+                self._on_calibracao(None, None)
+            janela.destroy()
+
+        botoes = ttk.Frame(janela)
+        botoes.grid(row=3, column=0, columnspan=2, sticky='e', padx=10, pady=10)
+        ttk.Button(botoes, text='usar biblioteca (padrão)',
+                  command=_restaura_biblioteca).pack(side='left', padx=(0, 16))
+        ttk.Button(botoes, text='cancelar', command=janela.destroy).pack(side='left')
+        ttk.Button(botoes, text='OK', command=_confirma).pack(side='left', padx=(8, 0))
+
     def atualiza_amostra(self, _t, valores):
         self.ultimas = valores
         for chave, (rot_contas, rot_volts, rot_extra) in self._rotulos.items():
@@ -627,7 +872,9 @@ class PainelLeituras(ttk.LabelFrame):
             rot_contas.configure(text=f'{conta:6d}')
             rot_volts.configure(text=f'{conta_para_volts(conta):+6.3f} V')
             if chave == 'LT':
-                rot_extra.configure(text=f'{contas_para_altura(conta):7.1f} mm (calibracao atual)')
+                rotulo_calib = f'grau {self._grau_lt}' if self._calib_lt is not None else 'biblioteca'
+                rot_extra.configure(
+                    text=f'{self.contas_para_altura_ativa(conta):7.1f} mm ({rotulo_calib})')
             elif chave == 'FT2':
                 rot_extra.configure(text=f'{contas_para_vazao(conta):6.3f} L/min')
             elif chave in ('PUMP2', 'VALVE'):
@@ -653,7 +900,7 @@ class AbaAula1(AbaBase):
         ttk.Label(
             calib, text='Para cada altura da regua: ajuste o nivel, digite o h medido\n'
                         'em mm e clique "adicionar ponto" (captura a leitura atual de LT).',
-            justify='left').grid(row=0, column=0, columnspan=4, sticky='w', pady=(0, 8))
+            justify='left').grid(row=0, column=0, columnspan=6, sticky='w', pady=(0, 8))
 
         ttk.Label(calib, text='h medido (mm):').grid(row=1, column=0, sticky='w')
         self.var_h = tk.StringVar()
@@ -663,24 +910,28 @@ class AbaAula1(AbaBase):
             row=1, column=2, sticky='w')
         ttk.Button(calib, text='remover selecionado', command=self._remove_ponto).grid(
             row=1, column=3, sticky='w', padx=(8, 0))
+        ttk.Button(calib, text='limpar tabela', command=self._limpa_tabela).grid(
+            row=1, column=4, sticky='w', padx=(8, 0))
+        ttk.Button(calib, text='carregar calibracao_lt.csv',
+                   command=self._carrega_csv).grid(row=1, column=5, sticky='w', padx=(8, 0))
 
         self.tabela = ttk.Treeview(
             calib, columns=('h', 'contas'), show='headings', height=8)
         self.tabela.heading('h', text='h [mm]')
         self.tabela.heading('contas', text='contas de LT_ADC')
-        self.tabela.grid(row=2, column=0, columnspan=4, sticky='nsew', pady=8)
+        self.tabela.grid(row=2, column=0, columnspan=6, sticky='nsew', pady=8)
         calib.rowconfigure(2, weight=1)
-        calib.columnconfigure(3, weight=1)
+        calib.columnconfigure(5, weight=1)
 
         botoes = ttk.Frame(calib)
-        botoes.grid(row=3, column=0, columnspan=4, sticky='w')
+        botoes.grid(row=3, column=0, columnspan=6, sticky='w')
         ttk.Button(botoes, text='salvar CSV (calibracao_lt.csv)',
                    command=self._salva_csv).pack(side='left')
         ttk.Button(botoes, text='ajustar (graus 1-3) e mostrar coeficientes',
                    command=self._ajusta).pack(side='left', padx=(8, 0))
 
         self.txt_resultado = tk.Text(calib, height=8, wrap='word', font=('TkFixedFont', 9))
-        self.txt_resultado.grid(row=4, column=0, columnspan=4, sticky='nsew', pady=(8, 0))
+        self.txt_resultado.grid(row=4, column=0, columnspan=6, sticky='nsew', pady=(8, 0))
         calib.rowconfigure(4, weight=1)
 
     def _adiciona_ponto(self):
@@ -702,6 +953,52 @@ class AbaAula1(AbaBase):
             idx = self.tabela.index(item)
             self.tabela.delete(item)
             del self._pontos[idx]
+
+    def _limpa_tabela(self):
+        if not self._pontos:
+            return
+        if not messagebox.askyesno(
+                'Limpar tabela',
+                f'Remover todos os {len(self._pontos)} pontos da tabela de calibracao de LT?\n'
+                'Esta acao nao pode ser desfeita.'):
+            return
+        self.tabela.delete(*self.tabela.get_children())
+        self._pontos.clear()
+
+    def _carrega_csv(self):
+        caminho = filedialog.askopenfilename(
+            title='Carregar calibracao_lt.csv',
+            initialfile='calibracao_lt.csv', filetypes=[('CSV', '*.csv')])
+        if not caminho:
+            return
+        try:
+            with open(caminho, newline='') as arquivo:
+                leitor = csv.DictReader(arquivo)
+                if leitor.fieldnames is None or 'h_mm' not in leitor.fieldnames \
+                        or 'contas' not in leitor.fieldnames:
+                    messagebox.showerror(
+                        'Arquivo invalido',
+                        f'{caminho} nao tem as colunas h_mm e contas. '
+                        'E um CSV de calibracao de LT (Tab. 1.6), salvo por '
+                        '"salvar CSV (calibracao_lt.csv)" ou pelo hub_planta.py?')
+                    return
+                linhas = [(float(linha['h_mm']), int(float(linha['contas']))) for linha in leitor]
+        except (OSError, ValueError) as erro:
+            messagebox.showerror('Erro ao ler arquivo', f'Nao foi possivel ler {caminho}:\n{erro}')
+            return
+        if not linhas:
+            messagebox.showwarning('Arquivo vazio', f'{caminho} nao tem nenhum ponto.')
+            return
+
+        # Cada linha entra exatamente como um clique em "adicionar ponto":
+        # acrescida a self._pontos e inserida na tabela, sem substituir os
+        # pontos ja presentes.
+        for h, contas in linhas:
+            self._pontos.append((h, contas))
+            self.tabela.insert('', 'end', values=(f'{h:.1f}', contas))
+        messagebox.showinfo(
+            'Carregado', f'{len(linhas)} pontos carregados de {caminho} e '
+            'acrescentados a tabela.')
 
     def _salva_csv(self):
         if not self._pontos:
@@ -731,8 +1028,10 @@ class AbaAula1(AbaBase):
 
         h = np.array([p[0] for p in self._pontos])
         contas = np.array([p[1] for p in self._pontos])
+        ss_tot = float(np.sum((h - h.mean()) ** 2))
 
-        linhas = [f'{"grau":>4} {"RMSE [mm]":>10} {"erro max [mm]":>14}']
+        linhas = [f'{"grau":>4} {"RMSE [mm]":>10} {"erro max [mm]":>14} {"R²":>8}']
+        coefs_por_grau = {}
         coefs_grau3 = None
         for grau in (1, 2, 3):
             coefs = np.polyfit(contas, h, grau)
@@ -740,9 +1039,16 @@ class AbaAula1(AbaBase):
             residuos = h_pred - h
             rmse = float(np.sqrt(np.mean(residuos ** 2)))
             erro_max = float(np.max(np.abs(residuos)))
-            linhas.append(f'{grau:>4} {rmse:>10.3f} {erro_max:>14.3f}')
+            r2 = 1.0 - float(np.sum(residuos ** 2)) / ss_tot
+            linhas.append(f'{grau:>4} {rmse:>10.3f} {erro_max:>14.3f} {r2:>8.5f}')
+            coefs_por_grau[grau] = coefs
             if grau == 3:
                 coefs_grau3 = coefs
+
+        linhas.append('')
+        linhas.append('Equacoes ajustadas (h em mm, N = leitura de LT em contas):')
+        for grau in (1, 2, 3):
+            linhas.append(f'  grau {grau}: {_formata_polinomio(coefs_por_grau[grau])}')
 
         linhas.append('')
         linhas.append('Cole em comum/conversoes.py, em LT_COEFS_H_DE_CONTAS:')
@@ -1328,6 +1634,16 @@ class Janela(tk.Tk):
         self.geometry('980x760')
         self.minsize(760, 600)
 
+        # Em alguns temas ttk do Linux (ex.: Ubuntu com tema 'default'/'clam'
+        # herdado do GTK) a altura de linha padrao do Treeview e calculada
+        # curta demais para a fonte do sistema, cortando os numeros das
+        # tabelas (calibracao de LT, varredura, escada) ao meio. Calcula a
+        # altura a partir da metrica real da fonte em vez de confiar no
+        # padrao do tema.
+        fonte_tabela = tkfont.nametofont('TkDefaultFont')
+        ttk.Style(self).configure(
+            'Treeview', rowheight=fonte_tabela.metrics('linespace') + 6)
+
         self.fila = queue.Queue()
         self.aquisicao = Aquisicao(planta, self.fila)
 
@@ -1396,7 +1712,8 @@ class Janela(tk.Tk):
         # com uma divisoria arrastavel com o mouse entre os dois.
         painel_topo = ttk.Panedwindow(painel, orient='horizontal')
 
-        self.painel_leituras = PainelLeituras(painel_topo, padding=10)
+        self.painel_leituras = PainelLeituras(
+            painel_topo, on_calibracao=self._define_calibracao_lt, padding=10)
         painel_topo.add(self.painel_leituras, weight=1)
         self._abas.append(self.painel_leituras)
 
@@ -1439,6 +1756,17 @@ class Janela(tk.Tk):
                 selectcolor='white', font=('TkDefaultFont', 9),
                 command=lambda c=chave, v=var: self.gr.define_visivel(c, v.get()),
             ).pack(side='left', padx=(6, 0))
+
+        # Curva de altura (h, mm): so vira utilizavel apos uma calibracao de
+        # LT ser definida no botao "Ajustar calibracao de LT" do painel de
+        # leituras - ate la o checkbox fica desabilitado.
+        self.var_serie_altura = tk.BooleanVar(value=True)
+        self.cb_serie_altura = tk.Checkbutton(
+            linha_series, text=ROTULO_ALTURA, variable=self.var_serie_altura,
+            fg=COR_ALTURA, activeforeground=COR_ALTURA, selectcolor='white',
+            font=('TkDefaultFont', 9), state='disabled',
+            command=lambda: self.gr.define_visivel_altura(self.var_serie_altura.get()))
+        self.cb_serie_altura.pack(side='left', padx=(6, 0))
 
         # Altura generosa por padrao; o proprio `Panedwindow` deixa o usuario
         # arrastar a divisoria para dar ainda mais (ou menos) espaco ao
@@ -1598,6 +1926,24 @@ class Janela(tk.Tk):
         self.gr.define_janela(segundos)
         self.cb_janela.selection_clear()
 
+    # -- calibracao de LT (definida pelo botao do painel de leituras) ------
+
+    def _define_calibracao_lt(self, grau, coefs):
+        """Callback do `PainelLeituras`: `grau`/`coefs` sao None quando o
+        usuario volta a calibracao da biblioteca (`conversoes.py`).
+
+        A partir da primeira calibracao definida (ou ao restaurar a da
+        biblioteca), a curva de altura passa a poder ser desenhada no
+        grafico ao vivo e entra nos CSV/PDF exportados - ver
+        `contas_para_altura_ativa` e `_drena_fila`."""
+        if not self.gr.altura_disponivel:
+            self.gr.ativa_altura()
+            self.cb_serie_altura.configure(state='normal')
+        self.gr.define_visivel_altura(self.var_serie_altura.get())
+
+    def contas_para_altura_ativa(self, conta):
+        return self.painel_leituras.contas_para_altura_ativa(conta)
+
     # -- pausa e exportacao do grafico -------------------------------------
 
     def _alterna_pausa(self):
@@ -1679,7 +2025,7 @@ class Janela(tk.Tk):
                 pump2, valve = valores['PUMP2'], valores['VALVE']
                 escritor.writerow([
                     f'{t - t0:.3f}',
-                    lt, f'{conta_para_volts(lt):.4f}', f'{contas_para_altura(lt):.3f}',
+                    lt, f'{conta_para_volts(lt):.4f}', f'{self.contas_para_altura_ativa(lt):.3f}',
                     ft2, f'{conta_para_volts(ft2):.4f}', f'{contas_para_vazao(ft2):.4f}',
                     pt, f'{conta_para_volts(pt):.4f}',
                     tt5, f'{conta_para_volts(tt5):.4f}',
@@ -1721,12 +2067,39 @@ class Janela(tk.Tk):
         eixo.set_ylim(-5, 105)
         eixo.grid(True, color='#e8e8e8')
         eixo.set_title('Planta TQ CE117 - janela exportada do grafico')
+
+        linhas_legenda, rotulos_legenda = [], []
+        eixo_leg, rotulos_leg = eixo.get_legend_handles_labels()
+        linhas_legenda += eixo_leg
+        rotulos_legenda += rotulos_leg
+
+        # Curva de altura (h, mm): so entra se estava disponivel e com o
+        # checkbox marcado no grafico ao vivo, no eixo secundario proprio -
+        # mesma logica de `Grafico.redesenha` (ver comentario de
+        # ROTULO_ALTURA/COR_ALTURA).
+        if self.gr.altura_disponivel and self.gr.altura_visivel:
+            h_mm = [self.contas_para_altura_ativa(valores['LT']) for _t, valores in linhas]
+            eixo_alt = eixo.twinx()
+            if modo_dispersao:
+                eixo_alt.step(ts, h_mm, where='post', color=COR_ALTURA, label=ROTULO_ALTURA,
+                             linewidth=0.8, linestyle='--', alpha=0.6)
+                eixo_alt.scatter(ts, h_mm, color=COR_ALTURA, s=22, zorder=3)
+            else:
+                eixo_alt.plot(ts, h_mm, color=COR_ALTURA, label=ROTULO_ALTURA, linewidth=1.5)
+            eixo_alt.set_ylabel('h [mm]', color=COR_ALTURA)
+            eixo_alt.tick_params(axis='y', labelcolor=COR_ALTURA)
+            alt_leg, alt_rot = eixo_alt.get_legend_handles_labels()
+            linhas_legenda += alt_leg
+            rotulos_legenda += alt_rot
+            n_visiveis += 1
+
         # Legenda fora da area das curvas (abaixo do eixo, em linha), para
         # nunca sobrepor o grafico - ao contrario de loc='best'/'upper
         # right', que pode cair em cima de uma curva dependendo dos dados.
         if n_visiveis:
-            eixo.legend(loc='upper center', bbox_to_anchor=(0.5, -0.14),
-                       ncol=min(n_visiveis, 4), fontsize=8, frameon=False)
+            eixo.legend(linhas_legenda, rotulos_legenda, loc='upper center',
+                       bbox_to_anchor=(0.5, -0.14), ncol=min(n_visiveis, 4),
+                       fontsize=8, frameon=False)
         fig.savefig(caminho, bbox_inches='tight')
         plt.close(fig)
         return True, None
@@ -1749,6 +2122,7 @@ class Janela(tk.Tk):
                     valores_pct = {chave: conta_para_percentual(valores[chave])
                                    for chave, _r, _c in SERIES_GRAFICO}
                     self.gr.acrescenta(t, valores_pct)
+                    self.gr.acrescenta_altura(t, self.contas_para_altura_ativa(valores['LT']))
                     self.gr.redesenha()
                     self._historico.append((t, valores))
                     self._apara_historico()
@@ -1756,7 +2130,7 @@ class Janela(tk.Tk):
                         aba.atualiza_amostra(t, valores)
                     if self.controle_owner is None:
                         self.lb_status.configure(
-                            text=f'LT {contas_para_altura(valores["LT"]):6.1f} mm   |   '
+                            text=f'LT {self.contas_para_altura_ativa(valores["LT"]):6.1f} mm   |   '
                                  f'FT2 {contas_para_vazao(valores["FT2"]):5.2f} L/min   |   '
                                  f'VALVE {conta_para_percentual(valores["VALVE"]):5.1f} %   |   '
                                  f'PUMP2 {conta_para_percentual(valores["PUMP2"]):5.1f} %',
