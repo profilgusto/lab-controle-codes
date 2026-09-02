@@ -7,3 +7,8 @@ numpy
 # numpy e usado so pela calibracao de LT (Aba "Aula 1"), para o ajuste
 # polinomial (mesma conta de ferramentas/calibracao-lt/calibra_lt.py). O grafico
 # ao vivo e desenhado num Canvas do proprio tkinter, sem matplotlib.
+#
+# matplotlib e opcional: so e importado (sob demanda) pelo botao "exportar
+# dados", para gerar o PDF da janela selecionada. Sem matplotlib instalado,
+# o CSV ainda e exportado normalmente - so o PDF fica de fora, com aviso.
+#   pip install matplotlib

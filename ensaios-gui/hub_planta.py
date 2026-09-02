@@ -73,6 +73,19 @@ TAGS_LEITURA = (TAG_LT, TAG_FT2, TAG_PT, TAG_TT5, TAG_PUMP2, TAG_VALVE)
 
 COLUNAS_ENSAIO = ['t_s', 'lt_contas', 'h_mm', 'ft2_contas', 'qin_lpm', 'pump2_pct']
 
+# Colunas do CSV exportado a partir de uma selecao no grafico ao vivo (botao
+# "exportar dados"): todas as tags lidas na janela selecionada, contas +
+# volts + grandeza fisica quando ha conversao definida.
+COLUNAS_EXPORTACAO = [
+    't_s',
+    'lt_contas', 'lt_volts', 'h_mm',
+    'ft2_contas', 'ft2_volts', 'qin_lpm',
+    'pt_contas', 'pt_volts',
+    'tt5_contas', 'tt5_volts',
+    'pump2_contas', 'pump2_volts', 'pump2_pct',
+    'valve_contas', 'valve_volts', 'valve_pct',
+]
+
 # Series do grafico: chave em `valores`, rotulo, cor. Todas convertidas para
 # % do fundo de escala do instrumento antes de desenhar (mesma unidade de
 # `conta_para_percentual`), o que permite compartilhar um unico eixo.
@@ -282,7 +295,27 @@ class Grafico(tk.Canvas):
         self.visiveis = {chave: True for chave, _r, _c in SERIES_GRAFICO}
         self.janela_s = float(janela_s)
         self._fonte_legenda = tkfont.Font(font=('TkDefaultFont', 8))
+
+        # Pausa: "congela" a visualizacao guardando uma copia das series no
+        # instante da pausa; `acrescenta()` continua alimentando `self.series`
+        # normalmente (a aquisicao nao para), so o desenho passa a ler da
+        # copia ate a visualizacao ser retomada.
+        self.pausado = False
+        self._series_pausadas = None
+
+        # Selecao de uma janela de tempo a arrasto do mouse (usada pelo
+        # botao "exportar dados"); `_geom` guarda a ultima geometria de
+        # desenho para converter posicao do mouse (px) em instante (t).
+        self.selecionando = False
+        self._callback_selecao = None
+        self._sel_inicio = None
+        self._sel_atual = None
+        self._geom = None
+
         self.bind('<Configure>', lambda _e: self.redesenha())
+        self.bind('<ButtonPress-1>', self._sel_pressiona)
+        self.bind('<B1-Motion>', self._sel_arrasta)
+        self.bind('<ButtonRelease-1>', self._sel_solta)
 
     def define_janela(self, janela_s):
         self.janela_s = float(janela_s)
@@ -312,14 +345,84 @@ class Grafico(tk.Canvas):
     def limpa(self):
         for pontos in self.series.values():
             pontos.clear()
+        if self._series_pausadas is not None:
+            self._series_pausadas = {chave: [] for chave in self.series}
         self.redesenha()
 
+    # -- pausa da visualizacao ------------------------------------------
+
+    def pausa(self):
+        self.pausado = True
+        self._series_pausadas = {chave: list(pontos) for chave, pontos in self.series.items()}
+
+    def retoma(self):
+        self.pausado = False
+        self._series_pausadas = None
+        self.redesenha()
+
+    def _fonte(self, chave):
+        if self.pausado and self._series_pausadas is not None:
+            return self._series_pausadas.get(chave, [])
+        return self.series[chave]
+
     def _visiveis(self, chave):
-        pontos = self.series[chave]
+        pontos = self._fonte(chave)
         if not pontos:
             return []
         t_fim = pontos[-1][0]
         return [(t, v) for t, v in pontos if t >= t_fim - self.janela_s]
+
+    # -- selecao de janela de tempo (para exportar dados) -----------------
+
+    def ativa_selecao(self, callback):
+        self.selecionando = True
+        self._callback_selecao = callback
+        self._sel_inicio = None
+        self._sel_atual = None
+        self.configure(cursor='crosshair')
+
+    def desativa_selecao(self):
+        self.selecionando = False
+        self._callback_selecao = None
+        self._sel_inicio = None
+        self._sel_atual = None
+        self.configure(cursor='')
+        self.redesenha()
+
+    def _px_para_t(self, x):
+        if self._geom is None:
+            return 0.0
+        x0, _y0, x1, _y1, t_ini, t_fim = self._geom
+        x = max(x0, min(x1, x))
+        frac = (x - x0) / (x1 - x0) if x1 > x0 else 0.0
+        return t_ini + frac * (t_fim - t_ini)
+
+    def _sel_pressiona(self, evento):
+        if not self.selecionando or self._geom is None:
+            return
+        self._sel_inicio = evento.x
+        self._sel_atual = evento.x
+
+    def _sel_arrasta(self, evento):
+        if not self.selecionando or self._sel_inicio is None:
+            return
+        self._sel_atual = evento.x
+        self.redesenha()
+
+    def _sel_solta(self, _evento):
+        if not self.selecionando or self._sel_inicio is None:
+            return
+        xa, xb = sorted((self._sel_inicio, self._sel_atual))
+        self._sel_inicio = None
+        self._sel_atual = None
+        if xb - xa < 4:
+            self.redesenha()
+            return
+        t_ini, t_fim = self._px_para_t(xa), self._px_para_t(xb)
+        callback = self._callback_selecao
+        self.desativa_selecao()
+        if callback is not None:
+            callback(t_ini, t_fim)
 
     def redesenha(self):
         self.delete('all')
@@ -379,6 +482,14 @@ class Grafico(tk.Canvas):
             self.create_text(legenda_x + 14, 13, text=rotulo, anchor='w',
                              font=self._fonte_legenda, fill='#333')
             legenda_x += 14 + self._fonte_legenda.measure(rotulo) + 20
+
+        self._geom = (x0, y0, x1, y1, t_ini, t_fim)
+
+        if self.selecionando and self._sel_inicio is not None and self._sel_atual is not None:
+            xa = max(x0, min(x1, self._sel_inicio))
+            xb = max(x0, min(x1, self._sel_atual))
+            self.create_rectangle(xa, y0, xb, y1, fill='#3a7bd5', outline='#2a5aa0',
+                                  stipple='gray25')
 
 
 class QuadroRolavel(ttk.Frame):
@@ -1197,6 +1308,11 @@ class Janela(tk.Tk):
         self.janelas.setdefault(rotulo_janela(self.janela_s), self.janela_s)
         self.janela_txt = tk.StringVar(value=rotulo_janela(self.janela_s))
 
+        # Historico bruto de amostras (t, valores em contas), mantido pela
+        # mesma janela maxima do grafico - usado pelo botao "exportar dados"
+        # para gravar o CSV/PDF da janela de tempo selecionada no grafico.
+        self._historico = deque()
+
         self._abas = []
         self._monta()
         self.protocol('WM_DELETE_WINDOW', self.encerra)
@@ -1260,13 +1376,23 @@ class Janela(tk.Tk):
         self.cb_janela.bind('<<ComboboxSelected>>', self._troca_janela)
         ttk.Button(janela, text='limpar grafico', command=lambda: self.gr.limpa()).pack(side='left')
 
-        ttk.Label(janela, text='  mostrar:').pack(side='left', padx=(14, 0))
+        self.bt_pausar = ttk.Button(
+            janela, text='pausar visualizacao', command=self._alterna_pausa)
+        self.bt_pausar.pack(side='left', padx=(14, 0))
+
+        self.bt_exportar = ttk.Button(
+            janela, text='exportar dados', command=self._alterna_exportacao)
+        self.bt_exportar.pack(side='left', padx=(6, 0))
+
+        linha_series = ttk.Frame(quadro_grafico)
+        linha_series.pack(fill='x', pady=(4, 0))
+        ttk.Label(linha_series, text='mostrar:').pack(side='left')
         self.vars_serie = {}
         for chave, rotulo, cor in SERIES_GRAFICO:
             var = tk.BooleanVar(value=True)
             self.vars_serie[chave] = var
             tk.Checkbutton(
-                janela, text=rotulo, variable=var, fg=cor, activeforeground=cor,
+                linha_series, text=rotulo, variable=var, fg=cor, activeforeground=cor,
                 selectcolor='white', font=('TkDefaultFont', 9),
                 command=lambda c=chave, v=var: self.gr.define_visivel(c, v.get()),
             ).pack(side='left', padx=(6, 0))
@@ -1429,6 +1555,117 @@ class Janela(tk.Tk):
         self.gr.define_janela(segundos)
         self.cb_janela.selection_clear()
 
+    # -- pausa e exportacao do grafico -------------------------------------
+
+    def _alterna_pausa(self):
+        if self.gr.pausado:
+            self.gr.retoma()
+            self.bt_pausar.configure(text='pausar visualizacao')
+        else:
+            self.gr.pausa()
+            self.bt_pausar.configure(text='retomar visualizacao')
+
+    def _alterna_exportacao(self):
+        if self.gr.selecionando:
+            self.gr.desativa_selecao()
+            self.bt_exportar.configure(text='exportar dados')
+            self.lb_status.configure(text='selecao cancelada.', foreground='#333')
+            return
+
+        if not self._historico:
+            messagebox.showwarning('Sem dados', 'Ainda nao ha amostras para exportar.')
+            return
+
+        # A visualizacao e pausada automaticamente: arrastar a selecao com o
+        # grafico ainda rolando ao vivo deslocaria o eixo do tempo debaixo do
+        # mouse durante o arrasto.
+        if not self.gr.pausado:
+            self._alterna_pausa()
+
+        self.gr.ativa_selecao(self._exporta_janela)
+        self.bt_exportar.configure(text='cancelar selecao')
+        self.lb_status.configure(
+            text='arraste o mouse sobre o grafico para selecionar a janela a exportar.',
+            foreground='#333')
+
+    def _exporta_janela(self, t_ini, t_fim):
+        self.bt_exportar.configure(text='exportar dados')
+        t_ini, t_fim = min(t_ini, t_fim), max(t_ini, t_fim)
+        linhas = [(t, valores) for t, valores in self._historico if t_ini - 1e-6 <= t <= t_fim + 1e-6]
+        if not linhas:
+            messagebox.showwarning('Sem dados', 'Nao ha amostras na janela selecionada.')
+            return
+
+        caminho_csv = filedialog.asksaveasfilename(
+            defaultextension='.csv', initialfile='exportacao_grafico.csv',
+            filetypes=[('CSV', '*.csv')])
+        if not caminho_csv:
+            return
+
+        self._salva_csv_exportacao(caminho_csv, linhas)
+        caminho_pdf = os.path.splitext(caminho_csv)[0] + '.pdf'
+        ok_pdf, erro_pdf = self._salva_pdf_exportacao(caminho_pdf, linhas)
+
+        resumo = f'{len(linhas)} amostras exportadas.\n\nCSV: {caminho_csv}'
+        if ok_pdf:
+            resumo += f'\nPDF: {caminho_pdf}'
+        else:
+            resumo += f'\n\nPDF nao gerado ({erro_pdf}).'
+        messagebox.showinfo('Exportacao concluida', resumo)
+        self.lb_status.configure(
+            text=f'exportado: {len(linhas)} amostras.', foreground='#0a7d32')
+
+    def _salva_csv_exportacao(self, caminho, linhas):
+        t0 = linhas[0][0]
+        with open(caminho, 'w', newline='') as arquivo:
+            escritor = csv.writer(arquivo)
+            escritor.writerow(COLUNAS_EXPORTACAO)
+            for t, valores in linhas:
+                lt, ft2 = valores['LT'], valores['FT2']
+                pt, tt5 = valores['PT'], valores['TT5']
+                pump2, valve = valores['PUMP2'], valores['VALVE']
+                escritor.writerow([
+                    f'{t - t0:.3f}',
+                    lt, f'{conta_para_volts(lt):.4f}', f'{contas_para_altura(lt):.3f}',
+                    ft2, f'{conta_para_volts(ft2):.4f}', f'{contas_para_vazao(ft2):.4f}',
+                    pt, f'{conta_para_volts(pt):.4f}',
+                    tt5, f'{conta_para_volts(tt5):.4f}',
+                    pump2, f'{conta_para_volts(pump2):.4f}', f'{conta_para_percentual(pump2):.1f}',
+                    valve, f'{conta_para_volts(valve):.4f}', f'{conta_para_percentual(valve):.1f}',
+                ])
+
+    def _salva_pdf_exportacao(self, caminho, linhas):
+        try:
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+        except ImportError as erro:
+            return False, str(erro)
+
+        t0 = linhas[0][0]
+        ts = [t - t0 for t, _v in linhas]
+        fig, eixo = plt.subplots(figsize=(8, 4.5))
+        for chave, rotulo, cor in SERIES_GRAFICO:
+            pcts = [conta_para_percentual(valores[chave]) for _t, valores in linhas]
+            eixo.plot(ts, pcts, color=cor, label=rotulo, linewidth=1.5)
+        eixo.set_xlabel('t [s]')
+        eixo.set_ylabel('% do fundo de escala do instrumento')
+        eixo.set_ylim(-5, 105)
+        eixo.grid(True, color='#e8e8e8')
+        eixo.legend(loc='upper right', fontsize=8)
+        eixo.set_title('Planta TQ CE117 - janela exportada do grafico')
+        fig.tight_layout()
+        fig.savefig(caminho)
+        plt.close(fig)
+        return True, None
+
+    def _apara_historico(self):
+        if not self._historico:
+            return
+        t_fim = self._historico[-1][0]
+        while self._historico and t_fim - self._historico[0][0] > JANELA_MAX_S:
+            self._historico.popleft()
+
     # -- atualizacao --------------------------------------------------------
 
     def _drena_fila(self):
@@ -1441,6 +1678,8 @@ class Janela(tk.Tk):
                                    for chave, _r, _c in SERIES_GRAFICO}
                     self.gr.acrescenta(t, valores_pct)
                     self.gr.redesenha()
+                    self._historico.append((t, valores))
+                    self._apara_historico()
                     for aba in self._abas:
                         aba.atualiza_amostra(t, valores)
                     if self.controle_owner is None:
