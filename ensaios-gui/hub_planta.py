@@ -50,9 +50,10 @@ from tkinter import filedialog, messagebox, ttk
 RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(RAIZ, 'comum'))
 
-from conversoes import (INT_MAX, INT_MIN, conta_para_percentual,
-                        conta_para_volts, contas_para_altura,
-                        contas_para_vazao, percentual_para_conta)
+from conversoes import (INT_MAX, INT_MIN, LT_COEFS_H_DE_CONTAS,
+                        conta_para_percentual, conta_para_volts,
+                        contas_para_altura, contas_para_vazao,
+                        percentual_para_conta)
 
 PLC_IP = '200.200.200.25'
 
@@ -99,9 +100,11 @@ SERIES_GRAFICO = (
 # A curva de altura do nivel (h, em mm) nao entra em SERIES_GRAFICO: ao
 # contrario das demais, ela nao e uma fracao do fundo de escala do
 # instrumento (0-100 %), e sim uma grandeza fisica em mm, com faixa propria.
-# Por isso o `Grafico` a desenha num eixo vertical secundario, a direita, so
-# quando uma calibracao de LT (grau + coeficientes) foi definida pelo botao
-# "Ajustar calibracao de LT" do `PainelLeituras`.
+# Por isso o `Grafico` a desenha num eixo vertical secundario, a direita.
+# Ela esta sempre disponivel, porque sempre ha uma calibracao de LT em vigor:
+# a da biblioteca (`LT_COEFS_H_DE_CONTAS`, em `comum/conversoes.py`) ate que o
+# botao "Ajustar calibracao de LT" do `PainelLeituras` receba os coeficientes
+# levantados na propria bancada (Aula 1).
 ROTULO_ALTURA = 'h (nivel, mm)'
 COR_ALTURA = '#7b2d8e'
 
@@ -114,6 +117,22 @@ def _avalia_polinomio(coefs, x):
     for c in coefs:
         resultado = resultado * x + c
     return resultado
+
+
+def _formata_equacao_polinomio(coefs):
+    """Monta 'h(N) = a3*N^3 + a2*N^2 + ...' a partir dos coeficientes (do
+    maior grau ao menor, mesma convencao de `_avalia_polinomio`)."""
+    grau = len(coefs) - 1
+    termos = []
+    for i, c in enumerate(coefs):
+        expoente = grau - i
+        if expoente == 0:
+            termos.append(f'{c!r}')
+        elif expoente == 1:
+            termos.append(f'{c!r}*N')
+        else:
+            termos.append(f'{c!r}*N^{expoente}')
+    return 'h(N) = ' + ' + '.join(termos).replace('+ -', '- ')
 
 
 def rotulo_janela(segundos):
@@ -341,11 +360,14 @@ class Grafico(tk.Canvas):
         self._fonte_legenda = tkfont.Font(font=('TkDefaultFont', 8))
 
         # Curva de altura (h, mm), com eixo proprio - ver comentario de
-        # ROTULO_ALTURA/COR_ALTURA. So e desenhada depois que uma calibracao
-        # de LT for definida (`ativa_altura`); ate la fica alimentada (para
-        # nao perder historico) mas invisivel.
+        # ROTULO_ALTURA/COR_ALTURA. Ja nasce disponivel: ha sempre uma
+        # calibracao de LT em vigor (a da biblioteca, em `conversoes.py`, ate
+        # que o aluno cole a da propria bancada), e e ela que a tabela de
+        # leituras ja usa para mostrar LT em mm. Esconder a curva ate uma
+        # calibracao ser colada deixaria o grafico dizendo menos do que a
+        # tabela ao lado dele.
         self.serie_altura = deque()
-        self.altura_disponivel = False
+        self.altura_disponivel = True
         self.altura_visivel = True
 
         # Modo de visualizacao: 'linha' interpola os pontos amostrados com
@@ -390,12 +412,6 @@ class Grafico(tk.Canvas):
 
     def alterna_modo(self):
         self.modo = 'dispersao' if self.modo == 'linha' else 'linha'
-        self.redesenha()
-
-    def ativa_altura(self):
-        """Chamado quando uma calibracao de LT e definida pela primeira vez:
-        a partir daqui a curva de altura passa a poder ser desenhada."""
-        self.altura_disponivel = True
         self.redesenha()
 
     def define_visivel_altura(self, visivel):
@@ -794,10 +810,30 @@ class PainelLeituras(ttk.LabelFrame):
 
     def contas_para_altura_ativa(self, conta):
         """h(conta) pela calibracao definida na sessao, ou pela biblioteca
-        (`comum/conversoes.py`) se nenhuma tiver sido definida ainda."""
+        (`comum/conversoes.py`) se nenhuma tiver sido definida ainda.
+
+        E ESTA a conversao usada em todo lugar que o hub escreve um h em mm:
+        a tabela de leituras, a curva de altura do grafico, o CSV/PDF da
+        exportacao por recorte e os CSV gravados pelas abas das Aulas 2 e 3.
+        Um unico ponto de conversao evita o pior erro possivel aqui - um
+        ensaio gravado com coeficientes diferentes dos que o aluno esta vendo
+        na tela.
+        """
         if self._calib_lt is not None:
             return _avalia_polinomio(self._calib_lt, conta)
         return contas_para_altura(conta)
+
+    def calibracao_da_sessao(self):
+        """(grau, coefs) da calibracao colada nesta sessao, ou None se o hub
+        ainda esta usando os coeficientes da biblioteca."""
+        if self._calib_lt is None:
+            return None
+        return self._grau_lt, self._calib_lt
+
+    def rotulo_calibracao(self):
+        if self._calib_lt is None:
+            return 'biblioteca (conversoes.py)'
+        return f'definida na sessao (grau {self._grau_lt})'
 
     def _abre_dialogo_calibracao(self):
         janela = tk.Toplevel(self)
@@ -814,16 +850,31 @@ class PainelLeituras(ttk.LabelFrame):
             justify='left').grid(row=0, column=0, columnspan=2, sticky='w',
                                  padx=10, pady=(10, 8))
 
+        if self._calib_lt is not None:
+            origem_atual = f'definida na sessão (grau {self._grau_lt})'
+            equacao_atual = _formata_equacao_polinomio(self._calib_lt)
+        else:
+            origem_atual = 'biblioteca (conversoes.py)'
+            equacao_atual = _formata_equacao_polinomio(LT_COEFS_H_DE_CONTAS)
+        quadro_atual = ttk.LabelFrame(janela, text='Calibração em vigor agora')
+        quadro_atual.grid(row=1, column=0, columnspan=2, sticky='we',
+                          padx=10, pady=(0, 8))
+        ttk.Label(quadro_atual, text=f'Origem: {origem_atual}').pack(
+            anchor='w', padx=8, pady=(4, 0))
+        ttk.Label(quadro_atual, text=equacao_atual, font=('TkFixedFont', 9),
+                  wraplength=460, justify='left').pack(
+            anchor='w', padx=8, pady=(2, 6))
+
         var_grau = tk.IntVar(value=self._grau_lt or 3)
         linha_grau = ttk.Frame(janela)
-        linha_grau.grid(row=1, column=0, columnspan=2, sticky='w', padx=10)
+        linha_grau.grid(row=2, column=0, columnspan=2, sticky='w', padx=10)
         for grau in (1, 2, 3):
             ttk.Radiobutton(
                 linha_grau, text=f'grau {grau}', variable=var_grau, value=grau,
                 command=lambda: _monta_campos_coefs()).pack(side='left', padx=(0, 12))
 
         quadro_coefs = ttk.Frame(janela)
-        quadro_coefs.grid(row=2, column=0, columnspan=2, sticky='w', padx=10, pady=(8, 0))
+        quadro_coefs.grid(row=3, column=0, columnspan=2, sticky='w', padx=10, pady=(8, 0))
         vars_coefs = []
 
         def _monta_campos_coefs():
@@ -871,7 +922,7 @@ class PainelLeituras(ttk.LabelFrame):
             janela.destroy()
 
         botoes = ttk.Frame(janela)
-        botoes.grid(row=3, column=0, columnspan=2, sticky='e', padx=10, pady=10)
+        botoes.grid(row=4, column=0, columnspan=2, sticky='e', padx=10, pady=10)
         ttk.Button(botoes, text='usar biblioteca (padrão)',
                   command=_restaura_biblioteca).pack(side='left', padx=(0, 16))
         ttk.Button(botoes, text='cancelar', command=janela.destroy).pack(side='left')
@@ -1104,12 +1155,19 @@ class GravadorEnsaio:
     Reamostra o fluxo continuo da thread de aquisicao (PERIODO_S) no periodo
     `periodo_s` pedido pelo usuario, so escrevendo uma linha quando ja se
     passou esse tempo desde a ultima linha gravada.
+
+    A coluna `h_mm` sai de `h_fn`, e nao direto de `contas_para_altura`: quem
+    constroi o gravador passa aqui o `contas_para_altura_ativa` da janela, de
+    modo que o ensaio seja gravado com a MESMA calibracao de LT que o aluno
+    ve na tabela de leituras e na curva de altura do grafico. Sem isso, colar
+    a calibracao da propria bancada mudaria a tela e nao o arquivo.
     """
 
-    def __init__(self, caminho, periodo_s, pump2_pct_fn):
+    def __init__(self, caminho, periodo_s, pump2_pct_fn, h_fn=contas_para_altura):
         self.caminho = caminho
         self.periodo_s = periodo_s
         self._pump2_pct_fn = pump2_pct_fn   # -> valor a gravar na coluna pump2_pct
+        self._h_fn = h_fn                   # contas de LT -> h [mm]
         self._arquivo = open(caminho, 'w', newline='')
         self._escritor = csv.writer(self._arquivo)
         self._escritor.writerow(COLUNAS_ENSAIO)
@@ -1127,7 +1185,7 @@ class GravadorEnsaio:
 
         lt = valores['LT']
         ft2 = valores['FT2']
-        h = contas_para_altura(lt)
+        h = self._h_fn(lt)
         q_in = contas_para_vazao(ft2)
         pump2_pct = self._pump2_pct_fn()
         self._escritor.writerow([
@@ -1158,7 +1216,9 @@ class AbaAula2(AbaBase):
         ttk.Label(
             esv, text='Encha o tanque com o dreno fechado, desligue PUMP2 e S (nos sliders\n'
                       'acima) e clique "iniciar gravacao" no EXATO instante em que abrir o\n'
-                      'dreno - esse e o t = 0 do ensaio. So observa; nao atua em nada.',
+                      'dreno - esse e o t = 0 do ensaio. So observa; nao atua em nada.\n'
+                      'O CSV sai com a coluna h_mm ja em milimetros, pela calibracao de LT\n'
+                      'ativa no painel de leituras (a mesma da curva h do grafico).',
             justify='left').grid(row=0, column=0, columnspan=4, sticky='w', pady=(0, 8))
 
         ttk.Label(esv, text='periodo T (s):').grid(row=1, column=0, sticky='w')
@@ -1180,7 +1240,8 @@ class AbaAula2(AbaBase):
         ttk.Label(
             deg, text='Toma o controle de VALVE e PUMP2 durante o ensaio (os sliders ficam\n'
                       'bloqueados). Ao terminar, devolve o controle aos sliders, no ultimo\n'
-                      'comando aplicado - sem zerar as saidas.',
+                      'comando aplicado - sem zerar as saidas. Grava o mesmo CSV do ensaio\n'
+                      'de esvaziamento, com h_mm pela calibracao de LT ativa.',
             justify='left').grid(row=0, column=0, columnspan=4, sticky='w', pady=(0, 8))
 
         campos = (
@@ -1220,10 +1281,16 @@ class AbaAula2(AbaBase):
             if T <= 0:
                 messagebox.showerror('T invalido', 'O periodo T tem de ser positivo.')
                 return
+            if not self.app.confirma_calibracao_lt('ensaio de esvaziamento'):
+                return
             caminho = self.var_esv_arquivo.get().strip() or 'esvaziamento.csv'
-            self._gravador_esv = GravadorEnsaio(caminho, T, pump2_pct_fn=lambda: None)
+            self._gravador_esv = GravadorEnsaio(
+                caminho, T, pump2_pct_fn=lambda: None,
+                h_fn=self.app.contas_para_altura_ativa)
             self.bt_esv.configure(text='parar gravacao')
-            self.lb_esv.configure(text=f'gravando em {caminho} ...')
+            self.lb_esv.configure(
+                text=f'gravando em {caminho} (h_mm pela calibracao '
+                     f'{self.app.rotulo_calibracao_lt()}) ...')
         else:
             n = self._gravador_esv.linhas
             caminho = self._gravador_esv.caminho
@@ -1276,6 +1343,8 @@ class AbaAula2(AbaBase):
                 'VALVE em 100 %). Use valve = 100.')
             return
 
+        if not self.app.confirma_calibracao_lt('ensaio de degrau'):
+            return
         if not self.app.pede_controle('Aula 2 - ensaio de degrau'):
             return
 
@@ -1285,7 +1354,8 @@ class AbaAula2(AbaBase):
             'dur': dur, 'aplicado': False, 'pump2_atual': p_ini,
         }
         self._gravador_deg = GravadorEnsaio(
-            caminho, T, pump2_pct_fn=lambda: self._deg_estado['pump2_atual'])
+            caminho, T, pump2_pct_fn=lambda: self._deg_estado['pump2_atual'],
+            h_fn=self.app.contas_para_altura_ativa)
         self.app.aplica_comando(valve, p_ini)
         self.bt_deg.configure(text='parar ensaio')
         self.lb_deg.configure(
@@ -1344,6 +1414,9 @@ class AbaAula3(AbaBase):
             var, text='Percorre uma lista de comandos de PUMP2, subindo ate o comando final e\n'
                       'depois descendo de volta ao inicial, mantendo cada patamar pelo tempo de\n'
                       'permanencia e gravando a media de FT2 dos ultimos segundos de cada um.\n'
+                      'Registra tambem o h medio (em mm, pela calibracao de LT ativa) de cada\n'
+                      'patamar - o tanque enche durante a varredura, e e essa coluna que mostra\n'
+                      'que qin(u) nao depende do nivel.\n'
                       'Exige VALVE em 100 % (liberado pelo slider/botao do topo da janela).',
             justify='left').grid(row=0, column=0, columnspan=6, sticky='w', pady=(0, 8))
 
@@ -1372,10 +1445,11 @@ class AbaAula3(AbaBase):
         self.lb_var.grid(row=4, column=2, columnspan=4, sticky='w', pady=(8, 0))
 
         self.tabela_var = ttk.Treeview(
-            var, columns=('u', 'sentido', 'qin'), show='headings', height=5)
+            var, columns=('u', 'sentido', 'qin', 'h'), show='headings', height=5)
         self.tabela_var.heading('u', text='u [%]')
         self.tabela_var.heading('sentido', text='sentido')
         self.tabela_var.heading('qin', text='qin medio [L/min]')
+        self.tabela_var.heading('h', text='h medio [mm]')
         self.tabela_var.grid(row=5, column=0, columnspan=6, sticky='nsew', pady=(8, 0))
 
         esc = ttk.LabelFrame(self, text='Escada de degraus (Secao 3.3.2)', padding=10)
@@ -1384,7 +1458,9 @@ class AbaAula3(AbaBase):
             esc, text='Aplica uma sequencia de comandos de PUMP2, cada um mantido pela mesma\n'
                       'duracao, gravando um CSV continuo (t_s, lt_contas, h_mm, ft2_contas,\n'
                       'qin_lpm, pump2_pct) e, num segundo arquivo, o instante de inicio, o h de\n'
-                      'equilibrio e o qin de equilibrio de cada patamar (Tab. 3.2 e Tab. 3.3).',
+                      'equilibrio e o qin de equilibrio de cada patamar (Tab. 3.2 e Tab. 3.3).\n'
+                      'Nos dois arquivos, h sai em mm pela calibracao de LT ativa no painel de\n'
+                      'leituras - a mesma da curva h do grafico.',
             justify='left').grid(row=0, column=0, columnspan=6, sticky='w', pady=(0, 8))
 
         ttk.Label(esc, text='sequencia de comandos (%):').grid(row=1, column=0, sticky='w')
@@ -1473,13 +1549,15 @@ class AbaAula3(AbaBase):
         descida = list(reversed(subida[:-1]))
         lista = [(u, 'subida') for u in subida] + [(u, 'descida') for u in descida]
 
+        if not self.app.confirma_calibracao_lt('varredura estatica'):
+            return
         if not self.app.pede_controle('Aula 3 - varredura estatica'):
             return
 
         caminho = self.var_var_arquivo.get().strip() or 'curva_atuador.csv'
         self._var_arquivo = open(caminho, 'w', newline='')
         self._var_escritor = csv.writer(self._var_arquivo)
-        self._var_escritor.writerow(['u_pct', 'sentido', 'qin_lpm'])
+        self._var_escritor.writerow(['u_pct', 'sentido', 'qin_lpm', 'h_mm'])
         for item in self.tabela_var.get_children():
             self.tabela_var.delete(item)
 
@@ -1509,16 +1587,21 @@ class AbaAula3(AbaBase):
             estado['t0'] = t
         trel = t - estado['t0']
         qin = contas_para_vazao(valores['FT2'])
-        estado['buffer'].append((trel, qin))
+        h = self.app.contas_para_altura_ativa(valores['LT'])
+        estado['buffer'].append((trel, qin, h))
 
         if trel - estado['t_inicio_patamar'] >= estado['permanencia']:
-            qin_medio = self._janela_media(estado['buffer'], trel, estado['media_s'])
+            qin_medio = self._janela_media([(tt, qq) for tt, qq, _h in estado['buffer']],
+                                           trel, estado['media_s'])
+            h_medio = self._janela_media([(tt, hh) for tt, _q, hh in estado['buffer']],
+                                         trel, estado['media_s'])
             idx = estado['idx']
             u_atual, sentido_atual = estado['lista'][idx]
-            self._var_escritor.writerow([f'{u_atual:.1f}', sentido_atual, f'{qin_medio:.4f}'])
+            self._var_escritor.writerow([f'{u_atual:.1f}', sentido_atual,
+                                         f'{qin_medio:.4f}', f'{h_medio:.2f}'])
             self._var_arquivo.flush()
             self.tabela_var.insert('', 'end', values=(f'{u_atual:.0f}', sentido_atual,
-                                                       f'{qin_medio:.3f}'))
+                                                       f'{qin_medio:.3f}', f'{h_medio:.1f}'))
 
             idx += 1
             if idx >= len(estado['lista']):
@@ -1564,6 +1647,8 @@ class AbaAula3(AbaBase):
             messagebox.showerror('Parametro invalido', str(erro))
             return
 
+        if not self.app.confirma_calibracao_lt('escada de degraus'):
+            return
         if not self.app.pede_controle('Aula 3 - escada de degraus'):
             return
 
@@ -1572,7 +1657,8 @@ class AbaAula3(AbaBase):
         caminho_eq = base + '_equilibrios.csv'
 
         self._esc_gravador = GravadorEnsaio(
-            caminho, T, pump2_pct_fn=lambda: self._esc_estado['seq'][self._esc_estado['idx']])
+            caminho, T, pump2_pct_fn=lambda: self._esc_estado['seq'][self._esc_estado['idx']],
+            h_fn=self.app.contas_para_altura_ativa)
         self._esc_arquivo_eq = open(caminho_eq, 'w', newline='')
         self._esc_escritor_eq = csv.writer(self._esc_arquivo_eq)
         self._esc_escritor_eq.writerow(['patamar', 'u_pct', 't_inicio_s', 'h_eq_mm', 'qin_eq_lpm'])
@@ -1605,7 +1691,10 @@ class AbaAula3(AbaBase):
     def _atualiza_esc(self, t, valores):
         estado = self._esc_estado
         trel = self._esc_gravador.recebe(t, valores)
-        h = contas_para_altura(valores['LT'])
+        # Mesma conversao do CSV continuo (ver `GravadorEnsaio`): o h_eq_mm do
+        # arquivo de equilibrios tem de sair da calibracao ativa, senao as duas
+        # metades do mesmo ensaio ficariam em escalas diferentes.
+        h = self.app.contas_para_altura_ativa(valores['LT'])
         qin = contas_para_vazao(valores['FT2'])
         estado['buffer'].append((trel, h, qin))
 
@@ -1794,14 +1883,15 @@ class Janela(tk.Tk):
                 command=lambda c=chave, v=var: self.gr.define_visivel(c, v.get()),
             ).pack(side='left', padx=(6, 0))
 
-        # Curva de altura (h, mm): so vira utilizavel apos uma calibracao de
-        # LT ser definida no botao "Ajustar calibracao de LT" do painel de
-        # leituras - ate la o checkbox fica desabilitado.
+        # Curva de altura (h, mm): disponivel desde o inicio, pela calibracao
+        # de LT em vigor (a da biblioteca ate que o botao "Ajustar calibracao
+        # de LT" do painel de leituras receba a da propria bancada). Qual das
+        # duas esta valendo se le no proprio painel de leituras.
         self.var_serie_altura = tk.BooleanVar(value=True)
         self.cb_serie_altura = tk.Checkbutton(
             linha_series, text=ROTULO_ALTURA, variable=self.var_serie_altura,
             fg=COR_ALTURA, activeforeground=COR_ALTURA, selectcolor='white',
-            font=('TkDefaultFont', 9), state='disabled',
+            font=('TkDefaultFont', 9),
             command=lambda: self.gr.define_visivel_altura(self.var_serie_altura.get()))
         self.cb_serie_altura.pack(side='left', padx=(6, 0))
 
@@ -1969,17 +2059,47 @@ class Janela(tk.Tk):
         """Callback do `PainelLeituras`: `grau`/`coefs` sao None quando o
         usuario volta a calibracao da biblioteca (`conversoes.py`).
 
-        A partir da primeira calibracao definida (ou ao restaurar a da
-        biblioteca), a curva de altura passa a poder ser desenhada no
-        grafico ao vivo e entra nos CSV/PDF exportados - ver
-        `contas_para_altura_ativa` e `_drena_fila`."""
-        if not self.gr.altura_disponivel:
-            self.gr.ativa_altura()
-            self.cb_serie_altura.configure(state='normal')
+        A troca vale imediatamente para tudo que o hub expressa em mm - a
+        tabela de leituras, a curva de altura do grafico, o CSV/PDF da
+        exportacao e os CSV das abas das Aulas 2 e 3 -, porque todos passam
+        por `contas_para_altura_ativa`. Ensaios ja gravados nao sao
+        reescritos: a calibracao vale a partir daqui.
+        """
         self.gr.define_visivel_altura(self.var_serie_altura.get())
+        self.gr.redesenha()
+        rotulo = self.rotulo_calibracao_lt()
+        if self.controle_owner is None:
+            self.lb_status.configure(
+                text=f'calibracao de LT: {rotulo}. Vale para o grafico, para a '
+                     'exportacao e para os ensaios das Aulas 2 e 3.',
+                foreground='#0a7d32')
 
     def contas_para_altura_ativa(self, conta):
         return self.painel_leituras.contas_para_altura_ativa(conta)
+
+    def rotulo_calibracao_lt(self):
+        return self.painel_leituras.rotulo_calibracao()
+
+    def confirma_calibracao_lt(self, nome_ensaio):
+        """Confirma com o usuario, antes de um ensaio das Aulas 2/3, que a
+        calibracao de LT em vigor e mesmo a que ele quer gravar.
+
+        O erro que isto evita e silencioso e caro: gravar um ensaio inteiro
+        com os coeficientes piloto da biblioteca em vez dos levantados na
+        propria bancada na Aula 1 - o CSV sai plausivel, so que numa escala
+        de nivel que nao e a desta planta. Devolve False se o usuario decidir
+        colar a calibracao antes de comecar.
+        """
+        if self.painel_leituras.calibracao_da_sessao() is not None:
+            return True
+        return messagebox.askyesno(
+            'Calibracao de LT',
+            f'O {nome_ensaio} vai gravar a coluna h_mm com os coeficientes da '
+            'BIBLIOTECA (comum/conversoes.py), levantados numa bancada piloto - '
+            'nenhuma calibracao foi colada nesta sessao.\n\n'
+            'Se voce ja tem os coeficientes da SUA bancada (Aula 1), cancele e '
+            'cole-os em "Ajustar calibracao de LT", no painel de leituras.\n\n'
+            'Gravar assim mesmo?')
 
     # -- pausa e exportacao do grafico -------------------------------------
 
