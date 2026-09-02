@@ -296,6 +296,15 @@ class Grafico(tk.Canvas):
         self.janela_s = float(janela_s)
         self._fonte_legenda = tkfont.Font(font=('TkDefaultFont', 8))
 
+        # Modo de visualizacao: 'linha' interpola os pontos amostrados com
+        # uma reta cheia (comportamento historico); 'dispersao' marca cada
+        # leitura com um ponto grande e visivel, ligado por uma linha fina e
+        # semi-transparente em "segurador de ordem zero" (o valor e mantido
+        # constante ate a proxima amostra, com subida abrupta no instante da
+        # amostra - reflete o que o CLP realmente entrega, sem sugerir uma
+        # interpolacao linear entre leituras que nao existe).
+        self.modo = 'linha'
+
         # Pausa: "congela" a visualizacao guardando uma copia das series no
         # instante da pausa; `acrescenta()` continua alimentando `self.series`
         # normalmente (a aquisicao nao para), so o desenho passa a ler da
@@ -324,6 +333,10 @@ class Grafico(tk.Canvas):
 
     def define_visivel(self, chave, visivel):
         self.visiveis[chave] = visivel
+        self.redesenha()
+
+    def alterna_modo(self):
+        self.modo = 'dispersao' if self.modo == 'linha' else 'linha'
         self.redesenha()
 
     def _descarta_velhos(self):
@@ -468,16 +481,37 @@ class Grafico(tk.Canvas):
             if not self.visiveis.get(chave, True):
                 continue
             pontos = todos_pontos[chave]
-            if len(pontos) >= 2:
-                traco = []
+            if self.modo == 'dispersao':
+                if len(pontos) >= 2:
+                    traco = [px(pontos[0][0]), py(max(v_lo, min(v_hi, pontos[0][1])))]
+                    for i in range(1, len(pontos)):
+                        t0, v0 = pontos[i - 1]
+                        t1, v1 = pontos[i]
+                        x1 = px(t1)
+                        y0 = py(max(v_lo, min(v_hi, v0)))
+                        y1 = py(max(v_lo, min(v_hi, v1)))
+                        traco += [x1, y0, x1, y1]
+                    # stipple aproxima transparencia (Canvas nao tem alpha
+                    # de verdade); a linha fica fina para nao competir com
+                    # os pontos, que sao a leitura de fato.
+                    self.create_line(*traco, fill=cor, width=1, stipple='gray50')
+                raio = 4
                 for t, v in pontos:
-                    traco += [px(t), py(max(v_lo, min(v_hi, v)))]
-                self.create_line(*traco, fill=cor, width=2)
-            if pontos:
-                ultimo = pontos[-1][1]
-                self.create_oval(px(pontos[-1][0]) - 3, py(max(v_lo, min(v_hi, ultimo))) - 3,
-                                 px(pontos[-1][0]) + 3, py(max(v_lo, min(v_hi, ultimo))) + 3,
-                                 fill=cor, outline='')
+                    y = py(max(v_lo, min(v_hi, v)))
+                    x = px(t)
+                    self.create_oval(x - raio, y - raio, x + raio, y + raio,
+                                     fill=cor, outline='')
+            else:
+                if len(pontos) >= 2:
+                    traco = []
+                    for t, v in pontos:
+                        traco += [px(t), py(max(v_lo, min(v_hi, v)))]
+                    self.create_line(*traco, fill=cor, width=2)
+                if pontos:
+                    ultimo = pontos[-1][1]
+                    self.create_oval(px(pontos[-1][0]) - 3, py(max(v_lo, min(v_hi, ultimo))) - 3,
+                                     px(pontos[-1][0]) + 3, py(max(v_lo, min(v_hi, ultimo))) + 3,
+                                     fill=cor, outline='')
             self.create_rectangle(legenda_x, 8, legenda_x + 10, 18, fill=cor, outline='')
             self.create_text(legenda_x + 14, 13, text=rotulo, anchor='w',
                              font=self._fonte_legenda, fill='#333')
@@ -1380,6 +1414,10 @@ class Janela(tk.Tk):
             janela, text='pausar visualizacao', command=self._alterna_pausa)
         self.bt_pausar.pack(side='left', padx=(14, 0))
 
+        self.bt_modo_grafico = ttk.Button(
+            janela, text='ver como dispersao', command=self._alterna_modo_grafico)
+        self.bt_modo_grafico.pack(side='left', padx=(6, 0))
+
         self.bt_exportar = ttk.Button(
             janela, text='exportar dados', command=self._alterna_exportacao)
         self.bt_exportar.pack(side='left', padx=(6, 0))
@@ -1569,6 +1607,13 @@ class Janela(tk.Tk):
             self.gr.pausa()
             self.bt_pausar.configure(text='retomar visualizacao')
 
+    def _alterna_modo_grafico(self):
+        self.gr.alterna_modo()
+        if self.gr.modo == 'dispersao':
+            self.bt_modo_grafico.configure(text='ver como linha')
+        else:
+            self.bt_modo_grafico.configure(text='ver como dispersao')
+
     def _alterna_exportacao(self):
         if self.gr.selecionando:
             self.gr.desativa_selecao()
@@ -1654,19 +1699,25 @@ class Janela(tk.Tk):
         fig, eixo = plt.subplots(figsize=(8, 4.5))
         # So entram as curvas que estavam com o checkbox de visualizacao
         # marcado no grafico ao vivo - o CSV continua com todas as tags.
+        n_visiveis = 0
         for chave, rotulo, cor in SERIES_GRAFICO:
             if not self.gr.visiveis.get(chave, True):
                 continue
             pcts = [conta_para_percentual(valores[chave]) for _t, valores in linhas]
             eixo.plot(ts, pcts, color=cor, label=rotulo, linewidth=1.5)
+            n_visiveis += 1
         eixo.set_xlabel('t [s]')
         eixo.set_ylabel('% do fundo de escala do instrumento')
         eixo.set_ylim(-5, 105)
         eixo.grid(True, color='#e8e8e8')
-        eixo.legend(loc='upper right', fontsize=8)
         eixo.set_title('Planta TQ CE117 - janela exportada do grafico')
-        fig.tight_layout()
-        fig.savefig(caminho)
+        # Legenda fora da area das curvas (abaixo do eixo, em linha), para
+        # nunca sobrepor o grafico - ao contrario de loc='best'/'upper
+        # right', que pode cair em cima de uma curva dependendo dos dados.
+        if n_visiveis:
+            eixo.legend(loc='upper center', bbox_to_anchor=(0.5, -0.14),
+                       ncol=min(n_visiveis, 4), fontsize=8, frameon=False)
+        fig.savefig(caminho, bbox_inches='tight')
         plt.close(fig)
         return True, None
 
