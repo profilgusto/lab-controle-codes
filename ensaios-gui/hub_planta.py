@@ -303,7 +303,7 @@ class Grafico(tk.Canvas):
         # constante ate a proxima amostra, com subida abrupta no instante da
         # amostra - reflete o que o CLP realmente entrega, sem sugerir uma
         # interpolacao linear entre leituras que nao existe).
-        self.modo = 'linha'
+        self.modo = 'dispersao'
 
         # Pausa: "congela" a visualizacao guardando uma copia das series no
         # instante da pausa; `acrescenta()` continua alimentando `self.series`
@@ -496,7 +496,7 @@ class Grafico(tk.Canvas):
                     # o suporte a stipple em linhas e inconsistente entre
                     # backends do Tk, deixando o canvas em branco).
                     self.create_line(*traco, fill=cor, width=1, dash=(3, 2))
-                raio = 4
+                raio = 5.5
                 for t, v in pontos:
                     y = py(max(v_lo, min(v_hi, v)))
                     x = px(t)
@@ -1410,7 +1410,7 @@ class Janela(tk.Tk):
         self.cb_janela.pack(side='left', padx=(4, 10))
         self.cb_janela.bind('<<ComboboxSelected>>', self._troca_janela)
         self.bt_modo_grafico = ttk.Button(
-            janela, text='ver como dispersao', command=self._alterna_modo_grafico)
+            janela, text='ver como linha', command=self._alterna_modo_grafico)
         self.bt_modo_grafico.pack(side='left', padx=(10, 6))
 
         ttk.Button(janela, text='limpar grafico', command=lambda: self.gr.limpa()).pack(side='left')
@@ -1699,13 +1699,22 @@ class Janela(tk.Tk):
         ts = [t - t0 for t, _v in linhas]
         fig, eixo = plt.subplots(figsize=(8, 4.5))
         # So entram as curvas que estavam com o checkbox de visualizacao
-        # marcado no grafico ao vivo - o CSV continua com todas as tags.
+        # marcado no grafico ao vivo - o CSV continua com todas as tags. O
+        # modo de visualizacao (linha cheia interpolando vs. dispersao com
+        # segurador de ordem zero) tambem segue o que esta selecionado no
+        # grafico ao vivo no momento da exportacao.
+        modo_dispersao = self.gr.modo == 'dispersao'
         n_visiveis = 0
         for chave, rotulo, cor in SERIES_GRAFICO:
             if not self.gr.visiveis.get(chave, True):
                 continue
             pcts = [conta_para_percentual(valores[chave]) for _t, valores in linhas]
-            eixo.plot(ts, pcts, color=cor, label=rotulo, linewidth=1.5)
+            if modo_dispersao:
+                eixo.step(ts, pcts, where='post', color=cor, label=rotulo,
+                         linewidth=0.8, linestyle='--', alpha=0.6)
+                eixo.scatter(ts, pcts, color=cor, s=22, zorder=3)
+            else:
+                eixo.plot(ts, pcts, color=cor, label=rotulo, linewidth=1.5)
             n_visiveis += 1
         eixo.set_xlabel('t [s]')
         eixo.set_ylabel('% do fundo de escala do instrumento')
