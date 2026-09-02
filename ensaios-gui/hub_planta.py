@@ -41,6 +41,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 from collections import deque
 from tkinter import filedialog, messagebox, ttk
 
@@ -278,12 +279,18 @@ class Grafico(tk.Canvas):
         super().__init__(master, background='white', highlightthickness=1,
                          highlightbackground='#b0b0b0', **kw)
         self.series = {chave: deque() for chave, _r, _c in SERIES_GRAFICO}
+        self.visiveis = {chave: True for chave, _r, _c in SERIES_GRAFICO}
         self.janela_s = float(janela_s)
+        self._fonte_legenda = tkfont.Font(font=('TkDefaultFont', 8))
         self.bind('<Configure>', lambda _e: self.redesenha())
 
     def define_janela(self, janela_s):
         self.janela_s = float(janela_s)
         self._descarta_velhos()
+        self.redesenha()
+
+    def define_visivel(self, chave, visivel):
+        self.visiveis[chave] = visivel
         self.redesenha()
 
     def _descarta_velhos(self):
@@ -349,8 +356,14 @@ class Grafico(tk.Canvas):
                              font=('TkDefaultFont', 8), fill='#555')
         self.create_rectangle(x0, y0, x1, y1, outline='#909090')
 
+        # A legenda so entra para series visiveis, e a largura de cada item e
+        # medida de verdade (fonte proporcional) em vez de estimada por
+        # len(rotulo) - a estimativa antiga subestimava rotulos como "VALVE
+        # (valvula S)" e fazia um item invadir o proximo.
         legenda_x = x0
         for chave, rotulo, cor in SERIES_GRAFICO:
+            if not self.visiveis.get(chave, True):
+                continue
             pontos = todos_pontos[chave]
             if len(pontos) >= 2:
                 traco = []
@@ -364,8 +377,8 @@ class Grafico(tk.Canvas):
                                  fill=cor, outline='')
             self.create_rectangle(legenda_x, 8, legenda_x + 10, 18, fill=cor, outline='')
             self.create_text(legenda_x + 14, 13, text=rotulo, anchor='w',
-                             font=('TkDefaultFont', 8), fill='#333')
-            legenda_x += 16 + len(rotulo) * 6 + 14
+                             font=self._fonte_legenda, fill='#333')
+            legenda_x += 14 + self._fonte_legenda.measure(rotulo) + 20
 
 
 class QuadroRolavel(ttk.Frame):
@@ -432,35 +445,62 @@ class AbaBase(ttk.Frame):
         """Chamado a cada amostra nova (na thread principal do Tk). Opcional."""
 
 
+class PainelLeituras(ttk.LabelFrame):
+    """Leitura de todas as tags (Tab. 1.3), sempre visivel ao lado do grafico.
+
+    Antes vivia dentro da aba da Aula 1; virou um painel proprio porque e
+    util em qualquer aula, nao so na primeira - por isso mora fora do
+    `ttk.Notebook`, ao lado do grafico, e nao dentro de uma aba.
+    """
+
+    def __init__(self, master, **kw):
+        super().__init__(master, text='Leitura de todas as tags (Tab. 1.3)', **kw)
+        self.ultimas = {}   # {chave: conta}, atualizado a cada amostra
+        self._rotulos = {}
+
+        cabecalhos = ('tag', 'contas', 'volts', '')
+        for j, texto in enumerate(cabecalhos):
+            ttk.Label(self, text=texto, font=('TkDefaultFont', 8, 'bold')).grid(
+                row=0, column=j, sticky='w', padx=(0, 14))
+        for i, chave in enumerate(('LT', 'FT2', 'PT', 'TT5', 'PUMP2', 'VALVE'), start=1):
+            ttk.Label(self, text=chave).grid(row=i, column=0, sticky='w', padx=(0, 14))
+            rot_contas = ttk.Label(self, text='--')
+            rot_contas.grid(row=i, column=1, sticky='w', padx=(0, 14))
+            rot_volts = ttk.Label(self, text='--')
+            rot_volts.grid(row=i, column=2, sticky='w', padx=(0, 14))
+            rot_extra = ttk.Label(self, text='')
+            rot_extra.grid(row=i, column=3, sticky='w')
+            self._rotulos[chave] = (rot_contas, rot_volts, rot_extra)
+
+    def atualiza_amostra(self, _t, valores):
+        self.ultimas = valores
+        for chave, (rot_contas, rot_volts, rot_extra) in self._rotulos.items():
+            conta = valores.get(chave)
+            if conta is None:
+                continue
+            rot_contas.configure(text=f'{conta:6d}')
+            rot_volts.configure(text=f'{conta_para_volts(conta):+6.3f} V')
+            if chave == 'LT':
+                rot_extra.configure(text=f'{contas_para_altura(conta):7.1f} mm (calibracao atual)')
+            elif chave == 'FT2':
+                rot_extra.configure(text=f'{contas_para_vazao(conta):6.3f} L/min')
+            elif chave in ('PUMP2', 'VALVE'):
+                rot_extra.configure(text=f'{conta_para_percentual(conta):5.1f} % do comando')
+
+
 class AbaAula1(AbaBase):
-    """Aula 1 - leitura de todas as tags e calibracao de LT (Secao 1.3.4)."""
+    """Aula 1 - calibracao de LT (Secao 1.3.4).
+
+    A leitura de todas as tags (Tab. 1.3) mora em `PainelLeituras`, sempre
+    visivel ao lado do grafico - nao aqui.
+    """
 
     def __init__(self, master, app):
         super().__init__(master, app)
-        self._lt_atual = None
         self._pontos = []   # [(h_mm, contas), ...]
         self._monta()
 
     def _monta(self):
-        leitura = ttk.LabelFrame(self, text='Leitura de todas as tags (Tab. 1.3)', padding=10)
-        leitura.pack(fill='x', pady=(0, 10))
-
-        self._rotulos = {}
-        colunas = ('tag', 'contas', 'volts', 'extra')
-        cabecalhos = ('tag', 'contas', 'volts', '')
-        for j, texto in enumerate(cabecalhos):
-            ttk.Label(leitura, text=texto, font=('TkDefaultFont', 8, 'bold')).grid(
-                row=0, column=j, sticky='w', padx=(0, 14))
-        for i, chave in enumerate(('LT', 'FT2', 'PT', 'TT5', 'PUMP2', 'VALVE'), start=1):
-            ttk.Label(leitura, text=chave).grid(row=i, column=0, sticky='w', padx=(0, 14))
-            rot_contas = ttk.Label(leitura, text='--')
-            rot_contas.grid(row=i, column=1, sticky='w', padx=(0, 14))
-            rot_volts = ttk.Label(leitura, text='--')
-            rot_volts.grid(row=i, column=2, sticky='w', padx=(0, 14))
-            rot_extra = ttk.Label(leitura, text='')
-            rot_extra.grid(row=i, column=3, sticky='w')
-            self._rotulos[chave] = (rot_contas, rot_volts, rot_extra)
-
         calib = ttk.LabelFrame(
             self, text='Calibracao de LT (Secao 1.3.4 - Tab. 1.6)', padding=10)
         calib.pack(fill='both', expand=True)
@@ -497,23 +537,9 @@ class AbaAula1(AbaBase):
         self.txt_resultado.grid(row=4, column=0, columnspan=4, sticky='nsew', pady=(8, 0))
         calib.rowconfigure(4, weight=1)
 
-    def atualiza_amostra(self, t, valores):
-        self._lt_atual = valores.get('LT')
-        for chave, (rot_contas, rot_volts, rot_extra) in self._rotulos.items():
-            conta = valores.get(chave)
-            if conta is None:
-                continue
-            rot_contas.configure(text=f'{conta:6d}')
-            rot_volts.configure(text=f'{conta_para_volts(conta):+6.3f} V')
-            if chave == 'LT':
-                rot_extra.configure(text=f'{contas_para_altura(conta):7.1f} mm (calibracao atual)')
-            elif chave == 'FT2':
-                rot_extra.configure(text=f'{contas_para_vazao(conta):6.3f} L/min')
-            elif chave in ('PUMP2', 'VALVE'):
-                rot_extra.configure(text=f'{conta_para_percentual(conta):5.1f} % do comando')
-
     def _adiciona_ponto(self):
-        if self._lt_atual is None:
+        lt_atual = self.app.painel_leituras.ultimas.get('LT')
+        if lt_atual is None:
             messagebox.showwarning('Sem leitura', 'Ainda nao ha leitura de LT. Aguarde a conexao.')
             return
         try:
@@ -521,8 +547,8 @@ class AbaAula1(AbaBase):
         except ValueError:
             messagebox.showerror('h invalido', 'Digite o h medido na regua, em mm.')
             return
-        self._pontos.append((h, self._lt_atual))
-        self.tabela.insert('', 'end', values=(f'{h:.1f}', self._lt_atual))
+        self._pontos.append((h, lt_atual))
+        self.tabela.insert('', 'end', values=(f'{h:.1f}', lt_atual))
         self.var_h.set('')
 
     def _remove_ponto(self):
@@ -1215,7 +1241,15 @@ class Janela(tk.Tk):
         painel = ttk.Panedwindow(self, orient='vertical')
         painel.pack(fill='both', expand=True, padx=10, pady=(0, 6))
 
-        quadro_grafico = ttk.Frame(painel)
+        # Leitura de todas as tags (sempre visivel) e grafico, lado a lado,
+        # com uma divisoria arrastavel com o mouse entre os dois.
+        painel_topo = ttk.Panedwindow(painel, orient='horizontal')
+
+        self.painel_leituras = PainelLeituras(painel_topo, padding=10)
+        painel_topo.add(self.painel_leituras, weight=1)
+        self._abas.append(self.painel_leituras)
+
+        quadro_grafico = ttk.Frame(painel_topo)
         janela = ttk.Frame(quadro_grafico)
         janela.pack(fill='x')
         ttk.Label(janela, text='janela do grafico:').pack(side='left')
@@ -1226,12 +1260,25 @@ class Janela(tk.Tk):
         self.cb_janela.bind('<<ComboboxSelected>>', self._troca_janela)
         ttk.Button(janela, text='limpar grafico', command=lambda: self.gr.limpa()).pack(side='left')
 
+        ttk.Label(janela, text='  mostrar:').pack(side='left', padx=(14, 0))
+        self.vars_serie = {}
+        for chave, rotulo, cor in SERIES_GRAFICO:
+            var = tk.BooleanVar(value=True)
+            self.vars_serie[chave] = var
+            tk.Checkbutton(
+                janela, text=rotulo, variable=var, fg=cor, activeforeground=cor,
+                selectcolor='white', font=('TkDefaultFont', 9),
+                command=lambda c=chave, v=var: self.gr.define_visivel(c, v.get()),
+            ).pack(side='left', padx=(6, 0))
+
         # Altura generosa por padrao; o proprio `Panedwindow` deixa o usuario
         # arrastar a divisoria para dar ainda mais (ou menos) espaco ao
         # grafico em relacao as abas logo abaixo.
         self.gr = Grafico(quadro_grafico, janela_s=self.janela_s, height=320)
         self.gr.pack(fill='both', expand=True, pady=(6, 0))
-        painel.add(quadro_grafico, weight=3)
+        painel_topo.add(quadro_grafico, weight=3)
+
+        painel.add(painel_topo, weight=3)
 
         self.notebook = ttk.Notebook(painel)
         painel.add(self.notebook, weight=2)
