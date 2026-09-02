@@ -368,6 +368,55 @@ class Grafico(tk.Canvas):
             legenda_x += 16 + len(rotulo) * 6 + 14
 
 
+class QuadroRolavel(ttk.Frame):
+    """Frame com barra de rolagem vertical.
+
+    Usado para o conteudo de cada aba: quando os controles de uma aula
+    ocupam mais altura do que cabe na janela, o conteudo rola em vez de
+    ficar cortado ou forcar a janela a crescer.
+    """
+
+    def __init__(self, master, **kw):
+        super().__init__(master, **kw)
+        self.canvas = tk.Canvas(self, highlightthickness=0)
+        self.scroll = ttk.Scrollbar(self, orient='vertical', command=self.canvas.yview)
+        self.interior = ttk.Frame(self.canvas)
+
+        self.canvas.configure(yscrollcommand=self.scroll.set)
+        self.canvas.pack(side='left', fill='both', expand=True)
+        self.scroll.pack(side='right', fill='y')
+
+        self._janela = self.canvas.create_window((0, 0), window=self.interior, anchor='nw')
+        self.interior.bind('<Configure>', self._atualiza_regiao_rolagem)
+        self.canvas.bind('<Configure>', self._ajusta_largura_interior)
+        self.canvas.bind('<Enter>', lambda _e: self._liga_roda())
+        self.canvas.bind('<Leave>', lambda _e: self._desliga_roda())
+
+    def _atualiza_regiao_rolagem(self, _evento=None):
+        self.canvas.configure(scrollregion=self.canvas.bbox('all'))
+
+    def _ajusta_largura_interior(self, evento):
+        self.canvas.itemconfigure(self._janela, width=evento.width)
+
+    def _liga_roda(self):
+        self.canvas.bind_all('<MouseWheel>', self._roda)
+        self.canvas.bind_all('<Button-4>', self._roda)
+        self.canvas.bind_all('<Button-5>', self._roda)
+
+    def _desliga_roda(self):
+        self.canvas.unbind_all('<MouseWheel>')
+        self.canvas.unbind_all('<Button-4>')
+        self.canvas.unbind_all('<Button-5>')
+
+    def _roda(self, evento):
+        if evento.num == 4:
+            self.canvas.yview_scroll(-1, 'units')
+        elif evento.num == 5:
+            self.canvas.yview_scroll(1, 'units')
+        else:
+            self.canvas.yview_scroll(-1 if evento.delta > 0 else 1, 'units')
+
+
 # ---------------------------------------------------------------------------
 # Abas das aulas
 # ---------------------------------------------------------------------------
@@ -1163,8 +1212,12 @@ class Janela(tk.Tk):
         comando.columnconfigure(1, weight=1)
         comando.columnconfigure(4, weight=1)
 
-        janela = ttk.Frame(self)
-        janela.pack(fill='x', padx=10)
+        painel = ttk.Panedwindow(self, orient='vertical')
+        painel.pack(fill='both', expand=True, padx=10, pady=(0, 6))
+
+        quadro_grafico = ttk.Frame(painel)
+        janela = ttk.Frame(quadro_grafico)
+        janela.pack(fill='x')
         ttk.Label(janela, text='janela do grafico:').pack(side='left')
         self.cb_janela = ttk.Combobox(
             janela, textvariable=self.janela_txt, width=8, state='readonly',
@@ -1173,34 +1226,37 @@ class Janela(tk.Tk):
         self.cb_janela.bind('<<ComboboxSelected>>', self._troca_janela)
         ttk.Button(janela, text='limpar grafico', command=lambda: self.gr.limpa()).pack(side='left')
 
-        self.gr = Grafico(self, janela_s=self.janela_s, height=180)
-        self.gr.pack(fill='x', padx=10, pady=6)
+        # Altura generosa por padrao; o proprio `Panedwindow` deixa o usuario
+        # arrastar a divisoria para dar ainda mais (ou menos) espaco ao
+        # grafico em relacao as abas logo abaixo.
+        self.gr = Grafico(quadro_grafico, janela_s=self.janela_s, height=320)
+        self.gr.pack(fill='both', expand=True, pady=(6, 0))
+        painel.add(quadro_grafico, weight=3)
 
-        self.notebook = ttk.Notebook(self)
-        self.notebook.pack(fill='both', expand=True, padx=10, pady=(0, 6))
+        self.notebook = ttk.Notebook(painel)
+        painel.add(self.notebook, weight=2)
 
-        aba1 = AbaAula1(self.notebook, self)
-        self.notebook.add(aba1, text='Aula 1')
-        self._abas.append(aba1)
-
-        aba2 = AbaAula2(self.notebook, self)
-        self.notebook.add(aba2, text='Aula 2')
-        self._abas.append(aba2)
-
-        aba3 = AbaAula3(self.notebook, self)
-        self.notebook.add(aba3, text='Aula 3')
-        self._abas.append(aba3)
-
+        self._adiciona_aba('Aula 1', AbaAula1)
+        self._adiciona_aba('Aula 2', AbaAula2)
+        self._adiciona_aba('Aula 3', AbaAula3)
         for n in range(4, 8):
-            aba = AbaEmDesenvolvimento(self.notebook, self, n)
-            self.notebook.add(aba, text=f'Aula {n}')
-            self._abas.append(aba)
+            self._adiciona_aba(f'Aula {n}', AbaEmDesenvolvimento, n)
 
         self.lb_status = ttk.Label(self, text='iniciando...', anchor='w',
                                    relief='sunken', padding=(6, 3))
         self.lb_status.pack(fill='x', padx=10, pady=(0, 10))
 
         self._atualiza_controles()
+
+    def _adiciona_aba(self, texto, classe_aba, *args):
+        """Cria uma aba dentro de um `QuadroRolavel`, para que abas com muitos
+        controles rolem em vez de espremer (ou cortar) o resto da janela."""
+        quadro = QuadroRolavel(self.notebook)
+        self.notebook.add(quadro, text=texto)
+        aba = classe_aba(quadro.interior, self, *args)
+        aba.pack(fill='both', expand=True)
+        self._abas.append(aba)
+        return aba
 
     # -- intertravamento e controle manual x automatico ------------------
 
