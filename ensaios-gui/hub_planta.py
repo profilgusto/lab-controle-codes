@@ -485,16 +485,17 @@ class Grafico(tk.Canvas):
                 if len(pontos) >= 2:
                     traco = [px(pontos[0][0]), py(max(v_lo, min(v_hi, pontos[0][1])))]
                     for i in range(1, len(pontos)):
-                        t0, v0 = pontos[i - 1]
-                        t1, v1 = pontos[i]
-                        x1 = px(t1)
-                        y0 = py(max(v_lo, min(v_hi, v0)))
-                        y1 = py(max(v_lo, min(v_hi, v1)))
-                        traco += [x1, y0, x1, y1]
-                    # stipple aproxima transparencia (Canvas nao tem alpha
-                    # de verdade); a linha fica fina para nao competir com
-                    # os pontos, que sao a leitura de fato.
-                    self.create_line(*traco, fill=cor, width=1, stipple='gray50')
+                        t_ant, v_ant = pontos[i - 1]
+                        t_atu, v_atu = pontos[i]
+                        x_atu = px(t_atu)
+                        y_ant = py(max(v_lo, min(v_hi, v_ant)))
+                        y_atu = py(max(v_lo, min(v_hi, v_atu)))
+                        traco += [x_atu, y_ant, x_atu, y_atu]
+                    # tracejada e fina para nao competir com os pontos, que
+                    # sao a leitura de fato (stipple foi trocado por dash:
+                    # o suporte a stipple em linhas e inconsistente entre
+                    # backends do Tk, deixando o canvas em branco).
+                    self.create_line(*traco, fill=cor, width=1, dash=(3, 2))
                 raio = 4
                 for t, v in pontos:
                     y = py(max(v_lo, min(v_hi, v)))
@@ -1408,15 +1409,15 @@ class Janela(tk.Tk):
             values=sorted(self.janelas, key=self.janelas.get))
         self.cb_janela.pack(side='left', padx=(4, 10))
         self.cb_janela.bind('<<ComboboxSelected>>', self._troca_janela)
+        self.bt_modo_grafico = ttk.Button(
+            janela, text='ver como dispersao', command=self._alterna_modo_grafico)
+        self.bt_modo_grafico.pack(side='left', padx=(10, 6))
+
         ttk.Button(janela, text='limpar grafico', command=lambda: self.gr.limpa()).pack(side='left')
 
         self.bt_pausar = ttk.Button(
             janela, text='pausar visualizacao', command=self._alterna_pausa)
         self.bt_pausar.pack(side='left', padx=(14, 0))
-
-        self.bt_modo_grafico = ttk.Button(
-            janela, text='ver como dispersao', command=self._alterna_modo_grafico)
-        self.bt_modo_grafico.pack(side='left', padx=(6, 0))
 
         self.bt_exportar = ttk.Button(
             janela, text='exportar dados', command=self._alterna_exportacao)
