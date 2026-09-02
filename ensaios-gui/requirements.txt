@@ -1,5 +1,6 @@
 pycomm3==1.2.16
 numpy
+matplotlib
 
 # O tkinter nao vem do pip: e pacote do sistema.
 #   Ubuntu/Debian:  sudo apt install python3-tk
@@ -8,7 +9,6 @@ numpy
 # polinomial (mesma conta de ferramentas/calibracao-lt/calibra_lt.py). O grafico
 # ao vivo e desenhado num Canvas do proprio tkinter, sem matplotlib.
 #
-# matplotlib e opcional: so e importado (sob demanda) pelo botao "exportar
-# dados", para gerar o PDF da janela selecionada. Sem matplotlib instalado,
-# o CSV ainda e exportado normalmente - so o PDF fica de fora, com aviso.
-#   pip install matplotlib
+# matplotlib e importado sob demanda, so pelo botao "exportar dados", para
+# gerar o PDF da janela selecionada. Sem matplotlib instalado, o CSV ainda e
+# exportado normalmente - so o PDF fica de fora, com aviso.

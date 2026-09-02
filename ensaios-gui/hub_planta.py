@@ -1645,7 +1645,11 @@ class Janela(tk.Tk):
         t0 = linhas[0][0]
         ts = [t - t0 for t, _v in linhas]
         fig, eixo = plt.subplots(figsize=(8, 4.5))
+        # So entram as curvas que estavam com o checkbox de visualizacao
+        # marcado no grafico ao vivo - o CSV continua com todas as tags.
         for chave, rotulo, cor in SERIES_GRAFICO:
+            if not self.gr.visiveis.get(chave, True):
+                continue
             pcts = [conta_para_percentual(valores[chave]) for _t, valores in linhas]
             eixo.plot(ts, pcts, color=cor, label=rotulo, linewidth=1.5)
         eixo.set_xlabel('t [s]')
