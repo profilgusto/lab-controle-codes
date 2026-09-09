@@ -17,15 +17,15 @@ coeficiente angular ajustado.
 A area A vem da medida de circunferencia da Secao 2.3.1 (D = C/pi,
 A = pi D^2/4); informe a circunferencia media, o diametro ou a propria area:
 
-    python3 ajuste-torricelli/ajusta_torricelli.py esvaziamento.csv --circunferencia 358
-    python3 ajuste-torricelli/ajusta_torricelli.py esvaziamento.csv --diametro 114
-    python3 ajuste-torricelli/ajusta_torricelli.py esvaziamento.csv --area 10207
+    python3 ajuste-torricelli/ajusta_torricelli.py esvaziamento-tanque.csv --circunferencia 358
+    python3 ajuste-torricelli/ajusta_torricelli.py esvaziamento-tanque.csv --diametro 114
+    python3 ajuste-torricelli/ajusta_torricelli.py esvaziamento-tanque.csv --area 10207
 
 Perto de h = 0 o esvaziamento desacelera e a leitura de LT perde resolucao;
 use `--t-max` (e, se preciso, `--h-min`) para ajustar a reta so no trecho
 confiavel do ensaio:
 
-    python3 ajuste-torricelli/ajusta_torricelli.py esvaziamento.csv -c 358 --t-max 55
+    python3 ajuste-torricelli/ajusta_torricelli.py esvaziamento-tanque.csv -c 358 --t-max 55
 
 Sem `--sem-grafico`, abre o grafico de sqrt(h) contra t com a reta ajustada
 sobreposta; `--figura arquivo.png` salva em vez de abrir.

@@ -19,8 +19,8 @@ tudo isso numa unica janela:
     ensaio daquela aula (por enquanto, Aulas 1 a 3 - as demais aparecem como
     "em desenvolvimento", no mesmo estado do roteiro).
 
-Toda aba que precisa gravar um CSV (calibracao de LT, esvaziamento, degrau) o
-faz a partir do MESMO fluxo de amostras da thread de aquisicao - nao abre uma
+Toda aba que precisa gravar um CSV (calibracao de LT, degrau) o faz a partir
+do MESMO fluxo de amostras da thread de aquisicao - nao abre uma
 segunda conexao com o CLP.
 
 Uso (a partir da pasta ensaios-gui/):
@@ -29,9 +29,10 @@ Uso (a partir da pasta ensaios-gui/):
     python3 -W ignore hub_planta.py --ip 200.200.200.25
 
 Requisito: tkinter (sistema, nao vem do pip) e numpy (para a calibracao de
-LT, na Aba 1). matplotlib e opcional, importado sob demanda pelos botoes de
-exportar grafico (Aba 1) e "exportar dados" (PDF) - sem ele instalado, o
-resto do hub funciona normalmente. Ver `requirements.txt`.
+LT, na Aba 1, e para o ajuste de Torricelli, na Aba 2). matplotlib e
+opcional, importado sob demanda pelos botoes de exportar grafico (Aba 1),
+"exportar dados" (PDF) e "gerar grafico do ensaio" (Aba 2) - sem ele
+instalado, o resto do hub funciona normalmente. Ver `requirements.txt`.
 """
 
 import argparse
@@ -1317,7 +1318,6 @@ class AbaAula2(AbaBase):
 
     def __init__(self, master, app):
         super().__init__(master, app)
-        self._gravador_esv = None
         self._gravador_deg = None
         self._deg_estado = None   # dict com o estado do ensaio de degrau em curso
         self._monta()
@@ -1326,34 +1326,34 @@ class AbaAula2(AbaBase):
         esv = ttk.LabelFrame(self, text='Ensaio de esvaziamento (Secao 2.3.2)', padding=10)
         esv.pack(fill='x', pady=(0, 10))
         ttk.Label(
-            esv, text='Encha o tanque com o dreno fechado, desligue PUMP2 e S (nos sliders\n'
-                      'acima) e clique "iniciar gravacao" no EXATO instante em que abrir o\n'
-                      'dreno - esse e o t = 0 do ensaio. So observa; nao atua em nada.\n'
-                      'O CSV sai com a coluna h_mm ja em milimetros, pela calibracao de LT\n'
-                      'ativa no painel de leituras (a mesma da curva h do grafico).',
-            justify='left').grid(row=0, column=0, columnspan=4, sticky='w', pady=(0, 8))
+            esv, text='O ensaio e feito direto no grafico ao vivo (nao ha gravacao\n'
+                      'controlada por aqui): encha o tanque com o dreno fechado, abra o\n'
+                      'dreno em t = 0 e, com o tanque parado perto de zero, use "exportar\n'
+                      'dados" no grafico, arrastando do joelho da curva h ate o final da\n'
+                      'descida (ver roteiro, Secao 2.3.2). Salve como esvaziamento-tanque.csv.',
+            justify='left').grid(row=0, column=0, columnspan=2, sticky='w', pady=(0, 8))
 
-        ttk.Label(esv, text='periodo T (s):').grid(row=1, column=0, sticky='w')
-        self.var_esv_T = tk.StringVar(value='2')
-        ttk.Entry(esv, textvariable=self.var_esv_T, width=6).grid(
-            row=1, column=1, sticky='w', padx=(4, 20))
-        ttk.Label(esv, text='arquivo:').grid(row=1, column=2, sticky='w')
-        self.var_esv_arquivo = tk.StringVar(value='esvaziamento.csv')
-        ttk.Entry(esv, textvariable=self.var_esv_arquivo, width=24).grid(
-            row=1, column=3, sticky='w', padx=(4, 0))
-
-        self.bt_esv = ttk.Button(esv, text='iniciar gravacao', command=self._alterna_esv)
-        self.bt_esv.grid(row=2, column=0, columnspan=2, sticky='w', pady=(8, 0))
-        self.lb_esv = ttk.Label(esv, text='parado.')
-        self.lb_esv.grid(row=2, column=2, columnspan=2, sticky='w', pady=(8, 0))
+        self.bt_esv = ttk.Button(
+            esv, text='Exportar Gráficos do Ensaio de Esvaziamento',
+            command=self._gera_grafico_esvaziamento)
+        self.bt_esv.grid(row=1, column=0, sticky='w')
+        self.lb_esv = ttk.Label(
+            esv, text='le o esvaziamento-tanque.csv exportado e gera DOIS PDFs: um com\n'
+                      'h(t) contra tres modelos de dreno (reta, Torricelli e Torricelli\n'
+                      'com offset) e o residuo de cada um - a curvatura aparece no residuo,\n'
+                      'nao em h(t) - e outro com sqrt(h)(t) e a reta ajustada, cujo\n'
+                      'coeficiente angular alimenta a Analise (Secao 2.4, item 2).',
+            justify='left')
+        self.lb_esv.grid(row=1, column=1, sticky='w', padx=(10, 0))
 
         deg = ttk.LabelFrame(self, text='Ensaio de degrau (Secao 2.3.3)', padding=10)
         deg.pack(fill='x')
         ttk.Label(
             deg, text='Toma o controle de VALVE e PUMP2 durante o ensaio (os sliders ficam\n'
                       'bloqueados). Ao terminar, devolve o controle aos sliders, no ultimo\n'
-                      'comando aplicado - sem zerar as saidas. Grava o mesmo CSV do ensaio\n'
-                      'de esvaziamento, com h_mm pela calibracao de LT ativa.',
+                      'comando aplicado - sem zerar as saidas. Grava um CSV no mesmo formato\n'
+                      'do exportado no ensaio de esvaziamento, com h_mm pela calibracao de\n'
+                      'LT ativa.',
             justify='left').grid(row=0, column=0, columnspan=4, sticky='w', pady=(0, 8))
 
         campos = (
@@ -1388,33 +1388,202 @@ class AbaAula2(AbaBase):
 
     # -- ensaio de esvaziamento ---------------------------------------------
 
-    def _alterna_esv(self):
-        if self._gravador_esv is None:
-            try:
-                T = float(self.var_esv_T.get().replace(',', '.'))
-            except ValueError:
-                messagebox.showerror('T invalido', 'Digite o periodo T, em segundos.')
-                return
-            if T <= 0:
-                messagebox.showerror('T invalido', 'O periodo T tem de ser positivo.')
-                return
-            if not self.app.confirma_calibracao_lt('ensaio de esvaziamento'):
-                return
-            caminho = self.var_esv_arquivo.get().strip() or 'esvaziamento.csv'
-            self._gravador_esv = GravadorEnsaio(
-                caminho, T, pump2_pct_fn=lambda: None,
-                h_fn=self.app.contas_para_altura_ativa)
-            self.bt_esv.configure(text='parar gravacao')
+    def _gera_grafico_esvaziamento(self):
+        caminho_csv = filedialog.askopenfilename(
+            title='Abrir CSV do ensaio de esvaziamento',
+            initialfile='esvaziamento-tanque.csv',
+            filetypes=[('CSV', '*.csv'), ('todos os arquivos', '*.*')])
+        if not caminho_csv:
+            return
+
+        try:
+            t, h = self._le_csv_esvaziamento(caminho_csv)
+        except ValueError as erro:
+            messagebox.showerror('CSV invalido', str(erro))
+            return
+
+        base = os.path.splitext(os.path.basename(caminho_csv))[0]
+
+        # -- grafico 1: h(t) contra tres modelos de dreno, com residuo ------
+        caminho_modelos = filedialog.asksaveasfilename(
+            title='Salvar grafico de h(t) contra os tres modelos de dreno',
+            defaultextension='.pdf', initialfile=f'{base}-modelos.pdf',
+            filetypes=[('PDF', '*.pdf')])
+        if not caminho_modelos:
+            return
+
+        erro = self._salva_pdf_modelos_esvaziamento(caminho_modelos, t, h)
+        if erro:
+            messagebox.showerror('Nao foi possivel gerar o grafico dos modelos', erro)
+            return
+
+        # -- grafico 2: sqrt(h) linearizado, com a reta ajustada -------------
+        try:
+            import numpy as np
+        except ImportError as erro:
+            messagebox.showerror('numpy ausente', str(erro))
+            return
+
+        # Descarta leituras negativas (ruido do LT perto de h=0) antes da raiz
+        # - mesma guarda do `--h-min` (padrao 0) de `ajusta_torricelli.py`.
+        valido = h >= 0.0
+        if valido.sum() < 2:
+            messagebox.showerror(
+                'Sem amostras validas',
+                'Depois de descartar leituras de h negativas (ruido perto de zero), '
+                'sobraram menos de duas amostras para ajustar sqrt(h).')
+            return
+        t_raiz, h_raiz = t[valido], h[valido]
+
+        raiz_h = np.sqrt(h_raiz)
+        a, b = np.polyfit(t_raiz, raiz_h, 1)
+        if a >= 0:
+            messagebox.showwarning(
+                'Coeficiente angular positivo',
+                'sqrt(h) cresce ao longo do CSV, em vez de decair - confira se o '
+                'arquivo e mesmo o do ensaio de esvaziamento (Secao 2.3.2) e se o '
+                'recorte nao pegou o trecho de enchimento por engano. O grafico '
+                'sera gerado assim mesmo.')
+
+        caminho_raiz = filedialog.asksaveasfilename(
+            title='Salvar grafico de sqrt(h) (linearizacao de Torricelli)',
+            defaultextension='.pdf', initialfile=f'{base}-raiz.pdf',
+            filetypes=[('PDF', '*.pdf')])
+        if not caminho_raiz:
             self.lb_esv.configure(
-                text=f'gravando em {caminho} (h_mm pela calibracao '
-                     f'{self.app.rotulo_calibracao_lt()}) ...')
-        else:
-            n = self._gravador_esv.linhas
-            caminho = self._gravador_esv.caminho
-            self._gravador_esv.fecha()
-            self._gravador_esv = None
-            self.bt_esv.configure(text='iniciar gravacao')
-            self.lb_esv.configure(text=f'parado. {n} amostras salvas em {caminho}.')
+                text=f'grafico dos modelos salvo em {caminho_modelos}.\n'
+                     'grafico de sqrt(h) cancelado.',
+                justify='left')
+            return
+
+        erro = self._salva_pdf_raiz_esvaziamento(caminho_raiz, t_raiz, h_raiz, a, b)
+        if erro:
+            messagebox.showerror('Nao foi possivel gerar o grafico de sqrt(h)', erro)
+            return
+
+        self.lb_esv.configure(
+            text=f'modelos: {caminho_modelos}\n'
+                 f'sqrt(h): {caminho_raiz}\n'
+                 f'coeficiente angular da reta ajustada: a = {a:.5f} mm^0.5/s '
+                 f'(use-o na Analise, Secao 2.4, item 2).',
+            justify='left')
+
+    def _le_csv_esvaziamento(self, caminho):
+        """Le as colunas t_s e h_mm de um CSV exportado do grafico ao vivo ou
+        gravado por `GravadorEnsaio` - ambos usam essas mesmas colunas (ver
+        `ferramentas/ajuste-torricelli/ajusta_torricelli.py`)."""
+        import numpy as np
+        t, h = [], []
+        with open(caminho, newline='') as arquivo:
+            leitor = csv.DictReader(arquivo)
+            if leitor.fieldnames is None or 't_s' not in leitor.fieldnames \
+                    or 'h_mm' not in leitor.fieldnames:
+                raise ValueError(
+                    f'{caminho} nao tem as colunas t_s e h_mm. Ele foi exportado '
+                    'do grafico ao vivo (botao "exportar dados") ou gerado por '
+                    'esse mesmo hub?')
+            for linha in leitor:
+                t.append(float(linha['t_s']))
+                h.append(float(linha['h_mm']))
+        if len(t) < 2:
+            raise ValueError(f'{caminho} tem menos de duas amostras.')
+        return np.array(t), np.array(h)
+
+    def _importa_modelos_esvaziamento(self):
+        """Reaproveita os modelos de dreno (reta, Torricelli puro, Torricelli
+        com offset) e o ajuste por `scipy.optimize.curve_fit` ja escritos em
+        `ferramentas/analise-rampas/analisa_rampas.py` (usado para gerar as
+        figuras de modelagem empirica da Aula 3) - so as funcoes de ajuste,
+        nao a estetica das figuras la definidas."""
+        caminho_ferramenta = os.path.join(RAIZ, 'ferramentas', 'analise-rampas')
+        if caminho_ferramenta not in sys.path:
+            sys.path.insert(0, caminho_ferramenta)
+        import analisa_rampas
+        return analisa_rampas
+
+    def _salva_pdf_modelos_esvaziamento(self, caminho, t, h):
+        try:
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+            import numpy as np
+        except ImportError as erro:
+            return str(erro)
+
+        try:
+            modelos = self._importa_modelos_esvaziamento()
+        except ImportError as erro:
+            return f'{erro} (este grafico tambem exige scipy, alem de matplotlib/numpy)'
+
+        try:
+            reta, p_tor, p_off = modelos.ajusta_modelos(t, h)
+        except RuntimeError as erro:
+            return (f'o ajuste de Torricelli (scipy.optimize.curve_fit) nao '
+                    f'convergiu neste CSV: {erro}')
+
+        curvas = [
+            ('reta', np.polyval(reta, t)),
+            (r'Torricelli $\sqrt{h}$', modelos.h_torricelli(t, *p_tor)),
+            (r'Torricelli $\sqrt{h+H_0}$', modelos.h_torricelli_offset(t, *p_off)),
+        ]
+
+        fig, (ax_h, ax_res) = plt.subplots(
+            2, 1, figsize=(7, 7), sharex=True, gridspec_kw={'height_ratios': [2, 1.3]})
+
+        ax_h.plot(t, h, 'o', markersize=4, color='0.35', label='medido')
+        for nome, y in curvas:
+            ax_h.plot(t, y, '-', linewidth=1.5, label=nome)
+        ax_h.set_ylabel('$h$  [mm]')
+        ax_h.set_title('Ensaio de esvaziamento: h(t) contra tres modelos de dreno')
+        ax_h.legend()
+        ax_h.grid(True, alpha=0.3)
+
+        for nome, y in curvas:
+            r = h - y
+            rms = float(np.sqrt(np.mean(r ** 2)))
+            maximo = float(np.abs(r).max())
+            ax_res.plot(t, r, '-', linewidth=1.5,
+                       label=f'{nome} (RMS = {rms:.2f} mm, max = {maximo:.2f} mm)')
+        ax_res.axhline(0.0, color='0.5', linewidth=0.8)
+        ax_res.set_xlabel('$t$  [s]')
+        ax_res.set_ylabel(r'residuo  $h - \mathrm{modelo}$  [mm]')
+        ax_res.legend(fontsize=8)
+        ax_res.grid(True, alpha=0.3)
+        ax_res.text(
+            0.02, 0.03,
+            'repare o arco no residuo da reta: e onde a curvatura de Torricelli\n'
+            'aparece - os residuos dos outros dois modelos ficam mais proximos\n'
+            'de zero e sem esse padrao sistematico.',
+            transform=ax_res.transAxes, fontsize=7, va='bottom', ha='left')
+
+        fig.tight_layout()
+        fig.savefig(caminho, dpi=150)
+        plt.close(fig)
+        return None
+
+    def _salva_pdf_raiz_esvaziamento(self, caminho, t, h, a, b):
+        try:
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+            import numpy as np
+        except ImportError as erro:
+            return str(erro)
+
+        fig, ax = plt.subplots(figsize=(7, 4.5))
+        ax.plot(t, np.sqrt(h), 'o', markersize=4, label='medido')
+        ax.plot(t, a * t + b, '-',
+               label=f'reta ajustada: $\\sqrt{{h}} = {b:.3f} {a:+.4f}\\,t$')
+        ax.set_xlabel('$t$  [s]')
+        ax.set_ylabel(r'$\sqrt{h}$  [mm$^{1/2}$]')
+        ax.set_title('Ensaio de esvaziamento: linearizacao de Torricelli')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        fig.tight_layout()
+        fig.savefig(caminho, dpi=150)
+        plt.close(fig)
+        return None
 
     # -- ensaio de degrau -----------------------------------------------
 
@@ -1491,9 +1660,6 @@ class AbaAula2(AbaBase):
         self.lb_deg.configure(text=f'parado ({motivo}). {n} amostras salvas em {caminho}.')
 
     def atualiza_amostra(self, t, valores):
-        if self._gravador_esv is not None:
-            self._gravador_esv.recebe(t, valores)
-
         if self._deg_estado is not None and self._gravador_deg is not None:
             estado = self._deg_estado
             trel = self._gravador_deg.recebe(t, valores)
@@ -1878,6 +2044,14 @@ class Janela(tk.Tk):
         self.title('Planta TQ CE117 - hub de ensaios')
         self.geometry('980x760')
         self.minsize(760, 600)
+
+        # As caixas de dialogo padrao (messagebox.show*/askyesno) usam por
+        # padrao um wrapLength estreito (poucas polegadas), o que deixa o
+        # texto alto e cheio de quebras de linha em avisos mais longos.
+        # "*Dialog.msg.wrapLength" e o padrao documentado do Tk para alargar
+        # essas caixas (nao tem efeito nos alertas nativos do macOS, que ja
+        # calculam sua propria largura).
+        self.option_add('*Dialog.msg.wrapLength', '6i')
 
         # Em alguns temas ttk do Linux (ex.: Ubuntu com tema 'default'/'clam'
         # herdado do GTK) a altura de linha padrao do Treeview e calculada
