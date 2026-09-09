@@ -28,8 +28,10 @@ Uso (a partir da pasta ensaios-gui/):
     python3 -W ignore hub_planta.py --sim   (sem CLP, tanque simulado)
     python3 -W ignore hub_planta.py --ip 200.200.200.25
 
-Requisito: tkinter (sistema, nao vem do pip) e numpy (so para a calibracao de
-LT, na Aba 1). Ver `requirements.txt`.
+Requisito: tkinter (sistema, nao vem do pip) e numpy (para a calibracao de
+LT, na Aba 1). matplotlib e opcional, importado sob demanda pelos botoes de
+exportar grafico (Aba 1) e "exportar dados" (PDF) - sem ele instalado, o
+resto do hub funciona normalmente. Ver `requirements.txt`.
 """
 
 import argparse
@@ -60,8 +62,12 @@ PLC_IP = '200.200.200.25'
 PERIODO_S = 0.5       # intervalo entre leituras da thread de aquisicao
 JANELA_S = 60.0        # largura inicial da janela de tempo do grafico
 JANELAS = (('30 s', 30.0), ('1 min', 60.0), ('2 min', 120.0), ('5 min', 300.0),
-           ('10 min', 600.0), ('30 min', 1800.0))
-JANELA_MAX_S = max(s for _r, s in JANELAS)
+           ('10 min', 600.0), ('30 min', 1800.0), ('60 min', 3600.0),
+           ('90 min', 5400.0))
+JANELA_MAX_S = max(s for _r, s in JANELAS)  # tambem o teto do historico em
+                                             # memoria (Aquisicao/Janela._historico
+                                             # abaixo) - 90 min, para cobrir a
+                                             # escada de degraus da Aula 3 (~50 min)
 
 TAG_PUMP2 = 'Program:MainProgram.PUMP2_DAC'
 TAG_VALVE = 'Program:MainProgram.VALVE_DAC'
@@ -219,13 +225,23 @@ class PlantaCLP:
 class PlantaSimulada:
     """Tanque de Torricelli de brincadeira, para testar a GUI sem a planta.
 
-    Parametros calibrados para reproduzir os numeros do ensaio piloto do
-    roteiro (equilibrio ~180 mm, tau ~ 20 s em h0 = 30 mm).
+    Parametros calibrados para reproduzir os numeros REAIS medidos na bancada
+    com o dreno totalmente aberto (ver `_refs/briefing-ensaios-aula2.md` e
+    `_refs/briefing-dreno-restrito-2026-09-09.md` no repositorio do roteiro):
+    equilibrio ~180 mm com PUMP2/VALVE a 100 %, e uma lei de Torricelli
+    GENERALIZADA com offset de carga, q_out = K * sqrt(h + C_MM), pois a
+    planta real mostrou uma nao linearidade bem mais fraca que a Torricelli
+    idealizada (expoente medido ~0,08, nao 0,5). Isso da tau ~ 110-140 s na
+    faixa de operacao usual (h0 entre 30 e 180 mm), NAO os ~20 s de uma
+    estimativa antiga baseada em Torricelli pura - contava, a versao anterior
+    deste simulador, deixava o "--sim" varias vezes mais rapido que a planta
+    real, o que ensina o timing errado do ensaio de degrau.
     """
 
-    AREA_MM2 = 1.02e4
-    K = 5.47e3
-    VAZAO_MAX_MM3_S = 7.34e4
+    AREA_MM2 = 1.64e4       # ~164 cm^2, ajuste conjunto aos ensaios reais
+    K = 3.83e3               # mm^2.5/s, em q_out = K sqrt(h + C_MM)
+    C_MM = 140.0              # offset de carga do dreno, em mm
+    VAZAO_MAX_MM3_S = 6.86e4  # PUMP2 e VALVE a 100 %, calibrado p/ h_eq ~180 mm
 
     def __init__(self, ip=None):
         self.h = 0.0
@@ -251,7 +267,7 @@ class PlantaSimulada:
         dt = max(0.0, min(dt, 1.0))
 
         q_in = (self.pump2_pct / 100.0) * (self.valve_pct / 100.0) * self.VAZAO_MAX_MM3_S
-        q_out = self.K * math.sqrt(max(0.0, self.h))
+        q_out = self.K * math.sqrt(max(0.0, self.h + self.C_MM))
         self.h = max(0.0, self.h + dt * (q_in - q_out) / self.AREA_MM2)
 
         lt = int(round(altura_para_contas(self.h)))
@@ -956,6 +972,7 @@ class AbaAula1(AbaBase):
     def __init__(self, master, app):
         super().__init__(master, app)
         self._pontos = []   # [(h_mm, contas), ...]
+        self._coefs_por_grau = None   # preenchido por _ajusta; None invalida o grafico
         self._monta()
 
     def _monta(self):
@@ -994,6 +1011,13 @@ class AbaAula1(AbaBase):
                    command=self._salva_csv).pack(side='left')
         ttk.Button(botoes, text='ajustar (graus 1-3) e mostrar coeficientes',
                    command=self._ajusta).pack(side='left', padx=(8, 0))
+        # So habilitado depois de um _ajusta bem-sucedido (ver _ajusta): o
+        # grafico depende dos coeficientes calculados la, e fica invalido
+        # (desabilitado de novo) assim que a tabela de pontos muda.
+        self.bt_exportar_grafico = ttk.Button(
+            botoes, text='exportar gráfico da calibração',
+            command=self._exporta_grafico, state='disabled')
+        self.bt_exportar_grafico.pack(side='left', padx=(8, 0))
 
         # `wrap='none'` (nao 'word'): a tabela de RMSE/erro max/R2 e as
         # equacoes usam espacamento fixo para alinhar colunas, e isso so
@@ -1028,12 +1052,14 @@ class AbaAula1(AbaBase):
         self._pontos.append((h, lt_atual))
         self.tabela.insert('', 'end', values=(f'{h:.1f}', lt_atual))
         self.var_h.set('')
+        self._invalida_ajuste()
 
     def _remove_ponto(self):
         for item in self.tabela.selection():
             idx = self.tabela.index(item)
             self.tabela.delete(item)
             del self._pontos[idx]
+        self._invalida_ajuste()
 
     def _limpa_tabela(self):
         if not self._pontos:
@@ -1045,6 +1071,14 @@ class AbaAula1(AbaBase):
             return
         self.tabela.delete(*self.tabela.get_children())
         self._pontos.clear()
+        self._invalida_ajuste()
+
+    def _invalida_ajuste(self):
+        """Chamado sempre que a tabela de pontos muda: os coeficientes (e o
+        grafico exportavel) de um ajuste anterior nao valem mais para os
+        pontos atuais."""
+        self._coefs_por_grau = None
+        self.bt_exportar_grafico.configure(state='disabled')
 
     def _carrega_csv(self):
         caminho = filedialog.askopenfilename(
@@ -1077,6 +1111,7 @@ class AbaAula1(AbaBase):
         for h, contas in linhas:
             self._pontos.append((h, contas))
             self.tabela.insert('', 'end', values=(f'{h:.1f}', contas))
+        self._invalida_ajuste()
         messagebox.showinfo(
             'Carregado', f'{len(linhas)} pontos carregados de {caminho} e '
             'acrescentados a tabela.')
@@ -1145,6 +1180,62 @@ class AbaAula1(AbaBase):
 
         self.txt_resultado.delete('1.0', 'end')
         self.txt_resultado.insert('1.0', '\n'.join(linhas))
+
+        self._coefs_por_grau = coefs_por_grau
+        self.bt_exportar_grafico.configure(state='normal')
+
+    def _exporta_grafico(self):
+        if not self._pontos or not self._coefs_por_grau:
+            messagebox.showwarning(
+                'Sem ajuste', 'Clique em "ajustar (graus 1-3) e mostrar coeficientes" '
+                'antes de exportar o grafico.')
+            return
+        try:
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+            import numpy as np
+        except ImportError as erro:
+            messagebox.showerror(
+                'matplotlib nao encontrado',
+                f'Nao foi possivel importar matplotlib/numpy para gerar o grafico:\n{erro}')
+            return
+
+        caminho = filedialog.asksaveasfilename(
+            title='Exportar grafico da calibracao de LT',
+            defaultextension='.png', initialfile='calibracao_lt.png',
+            filetypes=[('PNG', '*.png'), ('PDF', '*.pdf')])
+        if not caminho:
+            return
+
+        h = np.array([p[0] for p in self._pontos])
+        contas = np.array([p[1] for p in self._pontos])
+
+        fig, eixo = plt.subplots(figsize=(7, 5))
+        eixo.scatter(contas, h, color='#0a6ebd', s=28, zorder=3,
+                     label='pontos medidos (Tab. 1.6)')
+
+        contas_linha = np.linspace(contas.min(), contas.max(), 200)
+        cores_grau = {1: '#d62728', 2: '#2ca02c', 3: '#7b2d8e'}
+        for grau in (1, 2, 3):
+            coefs = self._coefs_por_grau[grau]
+            eixo.plot(contas_linha, np.polyval(coefs, contas_linha),
+                      color=cores_grau[grau], linewidth=1.6, label=f'ajuste grau {grau}')
+
+        eixo.set_xlabel('contas de LT_ADC')
+        eixo.set_ylabel('h [mm]')
+        eixo.set_title('Calibracao de LT (Secao 1.3.4 - Tab. 1.6)')
+        eixo.grid(True, color='#e8e8e8')
+        eixo.legend(loc='best', fontsize=9, frameon=False)
+
+        try:
+            fig.savefig(caminho, bbox_inches='tight', dpi=150)
+        except OSError as erro:
+            messagebox.showerror('Erro ao salvar', f'Nao foi possivel salvar {caminho}:\n{erro}')
+            return
+        finally:
+            plt.close(fig)
+        messagebox.showinfo('Exportado', f'Grafico salvo em {caminho}.')
 
 
 class GravadorEnsaio:
@@ -1248,9 +1339,14 @@ class AbaAula2(AbaBase):
             ('valve (%)', 'var_deg_valve', '100'),
             ('PUMP2 inicial (%)', 'var_deg_pi', '45'),
             ('PUMP2 final (%)', 'var_deg_pf', '65'),
-            ('t do degrau (s)', 'var_deg_tdeg', '10'),
+            ('t do degrau (s)', 'var_deg_tdeg', '20'),
             ('periodo T (s)', 'var_deg_T', '2'),
-            ('duracao (s, vazio = ate parar)', 'var_deg_dur', '180'),
+            # Ensaios reais (dreno totalmente aberto) medem tau da ordem de
+            # 100-150 s na faixa usual de operacao - acomodamento completo
+            # (~4 tau) pode levar 7 a 10 min. Deixa em branco por padrao
+            # ("ate parar") em vez de arriscar um corte antes do regime
+            # permanente; o aluno decide quando encerrar, olhando o grafico.
+            ('duracao (s, vazio = ate parar)', 'var_deg_dur', ''),
         )
         for i, (rotulo, nome, padrao) in enumerate(campos):
             var = tk.StringVar(value=padrao)
@@ -1469,7 +1565,9 @@ class AbaAula3(AbaBase):
             row=1, column=1, columnspan=3, sticky='w', padx=(4, 0))
 
         campos_esc = (
-            ('duracao por patamar (s)', 'var_esc_dur', '180'),
+            # 600 s (~4 tau nos patamares mais altos, tau ~100-160 s com o
+            # dreno totalmente aberto) - ver Secao 3.3.2 do roteiro da Aula 3.
+            ('duracao por patamar (s)', 'var_esc_dur', '600'),
             ('periodo T (s)', 'var_esc_T', '1'),
             ('media dos ultimos (s)', 'var_esc_media', '10'),
         )

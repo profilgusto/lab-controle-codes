@@ -9,6 +9,8 @@ matplotlib
 # polinomial (mesma conta de ferramentas/calibracao-lt/calibra_lt.py). O grafico
 # ao vivo e desenhado num Canvas do proprio tkinter, sem matplotlib.
 #
-# matplotlib e importado sob demanda, so pelo botao "exportar dados", para
-# gerar o PDF da janela selecionada. Sem matplotlib instalado, o CSV ainda e
-# exportado normalmente - so o PDF fica de fora, com aviso.
+# matplotlib e importado sob demanda, pelo botao "exportar gráfico da
+# calibração" (Aba "Aula 1") e pelo botao "exportar dados", para gerar o PDF
+# da janela selecionada. Sem matplotlib instalado, o CSV ainda e exportado
+# normalmente e a tabela de calibracao ainda funciona - so os graficos ficam
+# de fora, com aviso.
