@@ -96,6 +96,16 @@ COLUNAS_EXPORTACAO = [
 # Series do grafico: chave em `valores`, rotulo, cor. Todas convertidas para
 # % do fundo de escala do instrumento antes de desenhar (mesma unidade de
 # `conta_para_percentual`), o que permite compartilhar um unico eixo.
+# Passo dos sliders/botoes de comando manual (VALVE, PUMP2), em % do fundo
+# de escala do instrumento.
+PASSO_SLIDER = 0.5
+
+
+def _arredonda_passo(percentual, passo=PASSO_SLIDER):
+    """Arredonda um percentual (0-100) para o multiplo de `passo` mais proximo."""
+    return round(round(percentual / passo) * passo, 10)
+
+
 SERIES_GRAFICO = (
     ('LT', 'LT (nivel)', '#0a6ebd'),
     ('FT2', 'FT2 (vazao)', '#d98c00'),
@@ -1203,10 +1213,16 @@ class AbaAula1(AbaBase):
 
         caminho = filedialog.asksaveasfilename(
             title='Exportar grafico da calibracao de LT',
-            defaultextension='.png', initialfile='calibracao_lt.png',
-            filetypes=[('PNG', '*.png'), ('PDF', '*.pdf')])
+            defaultextension='.pdf', initialfile='calibracao_lt.pdf',
+            filetypes=[('PDF', '*.pdf')])
         if not caminho:
             return
+        # Alguns Tk/macOS nao aplicam `defaultextension` de forma confiavel
+        # quando ha so um filtro na caixa de dialogo - forcamos aqui para
+        # nao acabar com um arquivo sem extensao (que o matplotlib tambem
+        # recusaria a reconhecer como PDF).
+        if not caminho.lower().endswith('.pdf'):
+            caminho += '.pdf'
 
         h = np.array([p[0] for p in self._pontos])
         contas = np.array([p[1] for p in self._pontos])
@@ -1229,13 +1245,18 @@ class AbaAula1(AbaBase):
         eixo.legend(loc='best', fontsize=9, frameon=False)
 
         try:
-            fig.savefig(caminho, bbox_inches='tight', dpi=150)
-        except OSError as erro:
+            fig.savefig(caminho, bbox_inches='tight')
+        except Exception as erro:
+            # Excecao ampla (nao so OSError) e proposital: um erro do
+            # proprio matplotlib (ex.: backend/extensao) tambem precisa
+            # aparecer aqui, em vez de so no console - foi assim que a
+            # primeira versao deste botao falhava em silencio (o arquivo
+            # nunca era escrito e nada avisava o usuario).
             messagebox.showerror('Erro ao salvar', f'Nao foi possivel salvar {caminho}:\n{erro}')
             return
         finally:
             plt.close(fig)
-        messagebox.showinfo('Exportado', f'Grafico salvo em {caminho}.')
+        messagebox.showinfo('Exportado', f'Grafico salvo em {os.path.abspath(caminho)}.')
 
 
 class GravadorEnsaio:
@@ -1907,10 +1928,17 @@ class Janela(tk.Tk):
             comando, from_=0, to=100, orient='horizontal',
             variable=self.var_slider_valve, command=self._slider_valve_moveu, length=260)
         self.sl_valve.grid(row=0, column=1, sticky='we', padx=8)
-        self.lb_slider_valve = ttk.Label(comando, text='0 %', width=6)
+        self.sl_valve.bind('<Left>', lambda _e: self._incrementa_valve(-PASSO_SLIDER) or 'break')
+        self.sl_valve.bind('<Down>', lambda _e: self._incrementa_valve(-PASSO_SLIDER) or 'break')
+        self.sl_valve.bind('<Right>', lambda _e: self._incrementa_valve(PASSO_SLIDER) or 'break')
+        self.sl_valve.bind('<Up>', lambda _e: self._incrementa_valve(PASSO_SLIDER) or 'break')
+        self.lb_slider_valve = ttk.Label(comando, text='0.0 %', width=7)
         self.lb_slider_valve.grid(row=0, column=2, sticky='w')
+        self._monta_setas(comando, row=0, column=3,
+                           on_menos=lambda: self._incrementa_valve(-PASSO_SLIDER),
+                           on_mais=lambda: self._incrementa_valve(PASSO_SLIDER))
         self.bt_valve = tk.Button(comando, width=14, command=self._alterna_valve_botao)
-        self.bt_valve.grid(row=0, column=3, sticky='w', padx=(14, 0))
+        self.bt_valve.grid(row=0, column=4, sticky='w', padx=(14, 0))
 
         ttk.Label(comando, text='PUMP2:').grid(row=1, column=0, sticky='w', pady=(6, 0))
         self.var_slider_pump2 = tk.DoubleVar(value=0.0)
@@ -1918,16 +1946,23 @@ class Janela(tk.Tk):
             comando, from_=0, to=100, orient='horizontal',
             variable=self.var_slider_pump2, command=self._slider_pump2_moveu, length=260)
         self.sl_pump2.grid(row=1, column=1, sticky='we', padx=8, pady=(6, 0))
-        self.lb_slider_pump2 = ttk.Label(comando, text='0 %', width=6)
+        self.sl_pump2.bind('<Left>', lambda _e: self._incrementa_pump2(-PASSO_SLIDER) or 'break')
+        self.sl_pump2.bind('<Down>', lambda _e: self._incrementa_pump2(-PASSO_SLIDER) or 'break')
+        self.sl_pump2.bind('<Right>', lambda _e: self._incrementa_pump2(PASSO_SLIDER) or 'break')
+        self.sl_pump2.bind('<Up>', lambda _e: self._incrementa_pump2(PASSO_SLIDER) or 'break')
+        self.lb_slider_pump2 = ttk.Label(comando, text='0.0 %', width=7)
         self.lb_slider_pump2.grid(row=1, column=2, sticky='w', pady=(6, 0))
+        self._monta_setas(comando, row=1, column=3,
+                           on_menos=lambda: self._incrementa_pump2(-PASSO_SLIDER),
+                           on_mais=lambda: self._incrementa_pump2(PASSO_SLIDER))
         self.bt_pump2 = tk.Button(comando, width=14, command=self._alterna_pump2_botao)
-        self.bt_pump2.grid(row=1, column=3, sticky='w', padx=(14, 0), pady=(6, 0))
+        self.bt_pump2.grid(row=1, column=4, sticky='w', padx=(14, 0), pady=(6, 0))
 
         ttk.Checkbutton(comando, text='zerar saidas ao sair',
                         variable=self.zerar_ao_sair).grid(
-            row=0, column=4, rowspan=2, sticky='e', padx=(20, 0))
+            row=0, column=5, rowspan=2, sticky='e', padx=(20, 0))
         comando.columnconfigure(1, weight=1)
-        comando.columnconfigure(4, weight=1)
+        comando.columnconfigure(5, weight=1)
 
         painel = ttk.Panedwindow(self, orient='vertical')
         painel.pack(fill='both', expand=True, padx=10, pady=(0, 6))
@@ -2017,6 +2052,14 @@ class Janela(tk.Tk):
 
         self._atualiza_controles()
 
+    def _monta_setas(self, mestre, row, column, on_menos, on_mais):
+        """Par de botoes '<'/'>' para incrementar/decrementar um slider em
+        passos de `PASSO_SLIDER`, ao lado do rotulo de percentual."""
+        quadro = ttk.Frame(mestre)
+        quadro.grid(row=row, column=column, sticky='w', padx=(4, 0), pady=(6, 0) if row else 0)
+        ttk.Button(quadro, text='◀', width=2, command=on_menos).pack(side='left')
+        ttk.Button(quadro, text='▶', width=2, command=on_mais).pack(side='left', padx=(2, 0))
+
     def _adiciona_aba(self, texto, classe_aba, *args):
         """Cria uma aba dentro de um `QuadroRolavel`, para que abas com muitos
         controles rolem em vez de espremer (ou cortar) o resto da janela."""
@@ -2072,7 +2115,7 @@ class Janela(tk.Tk):
         if not habilitado and motivo_bloqueio and not ligado:
             rotulo = f'{nome}\nOFF - {motivo_bloqueio}'
         else:
-            rotulo = f'{nome}\n{"ON" if ligado else "OFF"}  ({pct:.0f} %)'
+            rotulo = f'{nome}\n{"ON" if ligado else "OFF"}  ({pct:.1f} %)'
         botao.configure(
             text=rotulo,
             state='normal' if habilitado else 'disabled',
@@ -2100,27 +2143,45 @@ class Janela(tk.Tk):
         # reflete nos sliders sem disparar de volta o callback de comando
         self.var_slider_valve.set(valve_pct)
         self.var_slider_pump2.set(pump2_pct)
-        self.lb_slider_valve.configure(text=f'{valve_pct:.0f} %')
-        self.lb_slider_pump2.configure(text=f'{pump2_pct:.0f} %')
+        self.lb_slider_valve.configure(text=f'{valve_pct:.1f} %')
+        self.lb_slider_pump2.configure(text=f'{pump2_pct:.1f} %')
         self._atualiza_controles()
+
+    def _avisa_pump2_bloqueado(self):
+        messagebox.showwarning(
+            'Intertravamento',
+            'PUMP2 bloqueado: abra a valvula S em 100 % antes de acionar a '
+            'bomba (a bomba contra a valvula parcial ou totalmente fechada '
+            'pressuriza a linha).')
 
     def _slider_valve_moveu(self, _valor):
         if self.controle_owner is not None:
             return
-        self.aplica_comando(self.var_slider_valve.get(), self.pump2_pct)
+        self.aplica_comando(_arredonda_passo(self.var_slider_valve.get()), self.pump2_pct)
 
     def _slider_pump2_moveu(self, _valor):
         if self.controle_owner is not None:
             return
         if not self._valve_totalmente_aberta():
             self.var_slider_pump2.set(0.0)
-            messagebox.showwarning(
-                'Intertravamento',
-                'PUMP2 bloqueado: abra a valvula S em 100 % antes de acionar a '
-                'bomba (a bomba contra a valvula parcial ou totalmente fechada '
-                'pressuriza a linha).')
+            self._avisa_pump2_bloqueado()
             return
-        self.aplica_comando(self.valve_pct, self.var_slider_pump2.get())
+        self.aplica_comando(self.valve_pct, _arredonda_passo(self.var_slider_pump2.get()))
+
+    def _incrementa_valve(self, delta):
+        if self.controle_owner is not None:
+            return
+        novo = _arredonda_passo(self.valve_pct + delta)
+        self.aplica_comando(novo, self.pump2_pct)
+
+    def _incrementa_pump2(self, delta):
+        if self.controle_owner is not None:
+            return
+        if not self._valve_totalmente_aberta():
+            self._avisa_pump2_bloqueado()
+            return
+        novo = _arredonda_passo(self.pump2_pct + delta)
+        self.aplica_comando(self.valve_pct, novo)
 
     def _alterna_valve_botao(self):
         if self.controle_owner is not None:
@@ -2132,11 +2193,7 @@ class Janela(tk.Tk):
         if self.controle_owner is not None:
             return
         if not self._valve_totalmente_aberta():
-            messagebox.showwarning(
-                'Intertravamento',
-                'PUMP2 bloqueado: abra a valvula S em 100 % antes de acionar a '
-                'bomba (a bomba contra a valvula parcial ou totalmente fechada '
-                'pressuriza a linha).')
+            self._avisa_pump2_bloqueado()
             return
         novo = 0.0 if self.pump2_pct >= 100.0 - 1e-6 else 100.0
         self.aplica_comando(self.valve_pct, novo)
