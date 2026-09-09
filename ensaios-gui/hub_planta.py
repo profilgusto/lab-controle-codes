@@ -745,10 +745,37 @@ class Grafico(tk.Canvas):
             self.create_rectangle(xa, y0, xb, y1, fill='#3a7bd5', outline='#2a5aa0',
                                   stipple='gray25')
 
-        # Crosshair da selecao: linha vertical acompanhando o mouse com o
-        # instante (t = ...) sob o cursor, para o usuario mirar o ponto de
-        # corte antes de soltar o botao (inicio ou fim da janela a exportar).
-        if self.selecionando and self._hover_x is not None:
+        # Crosshair da selecao. Dois casos:
+        # - arrasto em andamento: uma linha em cada extremo (inicio fixo,
+        #   fim acompanhando o mouse) com uma seta e o Delta t da janela
+        #   atual no meio, para o usuario ver o tamanho do recorte antes de
+        #   soltar o botao;
+        # - so passeando o mouse (antes de comecar o arrasto): uma unica
+        #   linha com o instante (t = ...) sob o cursor, para mirar o ponto
+        #   de corte.
+        if self.selecionando and self._sel_inicio is not None and self._sel_atual is not None:
+            xe = max(x0, min(x1, self._sel_inicio))
+            xd = max(x0, min(x1, self._sel_atual))
+            xa, xb = min(xe, xd), max(xe, xd)
+            self.create_line(xa, y0, xa, y1, fill='#c0392b', dash=(4, 2))
+            self.create_line(xb, y0, xb, y1, fill='#c0392b', dash=(4, 2))
+            delta_t = abs(self._px_para_t(xb) - self._px_para_t(xa))
+            y_seta = (y0 + y1) / 2
+            if xb - xa > 24:
+                self.create_line(xa + 4, y_seta, xb - 4, y_seta, fill='#c0392b',
+                                 width=2, arrow='both', arrowshape=(8, 10, 4))
+            xm = (xa + xb) / 2
+            id_texto = self.create_text(
+                xm, y_seta - 8, text=f'Δt = {rotulo_tempo(delta_t)}', anchor='s',
+                font=('TkDefaultFont', 9, 'bold'), fill='#c0392b')
+            caixa = self.bbox(id_texto)
+            if caixa is not None:
+                pad = 3
+                id_fundo = self.create_rectangle(
+                    caixa[0] - pad, caixa[1] - pad, caixa[2] + pad, caixa[3] + pad,
+                    fill='white', outline='#c0392b')
+                self.tag_raise(id_texto, id_fundo)
+        elif self.selecionando and self._hover_x is not None:
             xh = max(x0, min(x1, self._hover_x))
             self.create_line(xh, y0, xh, y1, fill='#c0392b', dash=(4, 2))
             t_h = self._px_para_t(xh)
