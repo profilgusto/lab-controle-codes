@@ -86,9 +86,12 @@ fluxo de amostras dessa thread unica - nao abre conexao propria.
 
 Requer Python 3.13.4 (ver o
 [README da raiz](../README.md#instalando-o-python-com-pyenv)) e depende de
-`pycomm3` e `numpy` (este ultimo so para a calibracao de `LT`, na Aba 1):
+`pycomm3` e `numpy` (este ultimo so para a calibracao de `LT`, na Aba 1). O
+`requirements.txt` e o unico, em `lab-controle-codes/` (cobre o hub e as
+ferramentas de `ferramentas/`):
 
 ```bash
+cd ..
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt

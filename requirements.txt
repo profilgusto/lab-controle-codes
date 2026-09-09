@@ -1,0 +1,30 @@
+pycomm3==1.2.16
+numpy
+matplotlib
+scipy
+
+# Conjunto unificado de dependencias de todo o `lab-controle-codes` (hub de
+# ensaios em ensaios-gui/, ferramentas de linha de comando em ferramentas/ e
+# comum/conversoes.py). Instale tudo de uma vez, a partir desta pasta:
+#
+#   python3 -m pip install -r requirements.txt
+#
+# - pycomm3: comunicacao com o PLC (CE117 via Node-RED/CLP). So e usado por
+#   ensaios-gui/hub_planta.py e por ferramentas/interacao-matlab/. Quem roda
+#   so com --sim (tanque simulado) ou so processa CSVs ja gravados nao
+#   precisa dele.
+# - numpy: ajustes polinomiais (calibracao de LT, linearizacao de Torricelli)
+#   em varias ferramentas e no hub.
+# - matplotlib: geracao de graficos/PDF (exportacao do hub, ajuste de
+#   Torricelli, analise de rampas, identificacao de degrau). Importado sob
+#   demanda nesses pontos - sem ele instalado, o resto de cada ferramenta
+#   continua funcionando, so os graficos ficam de fora.
+# - scipy: ajuste nao linear (scipy.optimize.curve_fit) dos modelos de
+#   Torricelli em ferramentas/analise-rampas/analisa_rampas.py, reaproveitado
+#   pelo botao "Exportar Graficos do Ensaio de Esvaziamento" da Aba "Aula 2"
+#   do hub.
+#
+# O tkinter (interface do hub) NAO vem do pip - e pacote do sistema:
+#   Ubuntu/Debian:  sudo apt install python3-tk
+#   Fedora:         sudo dnf install python3-tkinter
+#   macOS (Homebrew): brew install python-tk

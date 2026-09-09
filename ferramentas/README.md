@@ -2,8 +2,9 @@
 
 Scripts de apoio que **nao** entraram no hub (`ensaios-gui/hub_planta.py`)
 porque nao sao ensaios ao vivo na planta - sao analise pos-ensaio ou uma
-ponte para outro ambiente. Cada um roda sozinho, com seu proprio
-`requirements.txt`.
+ponte para outro ambiente. Cada um roda sozinho; as dependencias de todos
+(e do hub) estao reunidas no `requirements.txt` unico em
+[`lab-controle-codes/`](..).
 
 | pasta | o que faz | onde aparece no roteiro |
 |---|---|---|
@@ -25,11 +26,11 @@ caso).
 ## Instalacao
 
 Requer Python 3.13.4 (ver o
-[README da raiz](../README.md#instalando-o-python-com-pyenv)). Cada pasta tem
-seu proprio `requirements.txt`:
+[README da raiz](../README.md#instalando-o-python-com-pyenv)). Use o
+`requirements.txt` unico em `lab-controle-codes/`:
 
 ```bash
-cd ferramentas/calibracao-lt
+cd lab-controle-codes
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt

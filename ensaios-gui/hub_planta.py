@@ -29,10 +29,12 @@ Uso (a partir da pasta ensaios-gui/):
     python3 -W ignore hub_planta.py --ip 200.200.200.25
 
 Requisito: tkinter (sistema, nao vem do pip) e numpy (para a calibracao de
-LT, na Aba 1, e para o ajuste de Torricelli, na Aba 2). matplotlib e
-opcional, importado sob demanda pelos botoes de exportar grafico (Aba 1),
-"exportar dados" (PDF) e "gerar grafico do ensaio" (Aba 2) - sem ele
-instalado, o resto do hub funciona normalmente. Ver `requirements.txt`.
+LT, na Aba 1, e para o ajuste de Torricelli, na Aba 2). matplotlib e scipy
+sao opcionais, importados sob demanda pelos botoes de exportar grafico
+(Aba 1), "exportar dados" (PDF) e "Exportar Graficos do Ensaio de
+Esvaziamento" (Aba 2, este ultimo tambem exige scipy para o ajuste dos
+modelos de Torricelli) - sem eles instalados, o resto do hub funciona
+normalmente. Ver `requirements.txt`, em `lab-controle-codes/`.
 """
 
 import argparse

@@ -69,11 +69,12 @@ python --version   # Python 3.13.4
 
 ## Instalando as dependencias
 
-Cada pasta traz seu proprio `requirements.txt`. Crie um ambiente virtual
-dentro da pasta e instale ali:
+Um unico `requirements.txt`, nesta pasta (`lab-controle-codes/`), cobre o hub
+e todas as ferramentas. Crie um ambiente virtual aqui e instale a partir
+dele:
 
 ```bash
-cd ensaios-gui
+cd lab-controle-codes
 python -m venv .venv
 source .venv/bin/activate     # Windows: .venv\Scripts\activate
 
@@ -83,14 +84,10 @@ pip install -r requirements.txt
 
 Tudo o que fala com o CLP depende so de `pycomm3`; o hub e a calibracao de
 `LT` pedem tambem **tkinter** e `numpy` respectivamente (`tkinter` vem do
-sistema, nao do pip), e o ajuste de Torricelli usa `numpy` e `matplotlib`.
+sistema, nao do pip), e o ajuste de Torricelli e a analise de rampas usam
+`numpy`, `matplotlib` e (esta ultima) `scipy`.
 
-Para sair do ambiente virtual, `deactivate`. Se voce mesmo acrescentar
-bibliotecas, registre-as com:
-
-```bash
-pip freeze > requirements.txt
-```
+Para sair do ambiente virtual, `deactivate`.
 
 ## Organizacao
 
