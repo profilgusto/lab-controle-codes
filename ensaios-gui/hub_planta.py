@@ -424,11 +424,16 @@ class Grafico(tk.Canvas):
         self._sel_inicio = None
         self._sel_atual = None
         self._geom = None
+        # Posicao (px) do mouse durante a selecao, para desenhar a linha
+        # vertical de crosshair com o instante (t = ...) sob o cursor.
+        self._hover_x = None
 
         self.bind('<Configure>', lambda _e: self.redesenha())
         self.bind('<ButtonPress-1>', self._sel_pressiona)
         self.bind('<B1-Motion>', self._sel_arrasta)
         self.bind('<ButtonRelease-1>', self._sel_solta)
+        self.bind('<Motion>', self._sel_move)
+        self.bind('<Leave>', self._sel_saida)
 
     def define_janela(self, janela_s):
         self.janela_s = float(janela_s)
@@ -532,6 +537,7 @@ class Grafico(tk.Canvas):
         self._callback_selecao = None
         self._sel_inicio = None
         self._sel_atual = None
+        self._hover_x = None
         self.configure(cursor='')
         self.redesenha()
 
@@ -553,6 +559,18 @@ class Grafico(tk.Canvas):
         if not self.selecionando or self._sel_inicio is None:
             return
         self._sel_atual = evento.x
+        self.redesenha()
+
+    def _sel_move(self, evento):
+        if not self.selecionando or self._geom is None:
+            return
+        self._hover_x = evento.x
+        self.redesenha()
+
+    def _sel_saida(self, _evento):
+        if self._hover_x is None:
+            return
+        self._hover_x = None
         self.redesenha()
 
     def _sel_solta(self, _evento):
@@ -726,6 +744,25 @@ class Grafico(tk.Canvas):
             xb = max(x0, min(x1, self._sel_atual))
             self.create_rectangle(xa, y0, xb, y1, fill='#3a7bd5', outline='#2a5aa0',
                                   stipple='gray25')
+
+        # Crosshair da selecao: linha vertical acompanhando o mouse com o
+        # instante (t = ...) sob o cursor, para o usuario mirar o ponto de
+        # corte antes de soltar o botao (inicio ou fim da janela a exportar).
+        if self.selecionando and self._hover_x is not None:
+            xh = max(x0, min(x1, self._hover_x))
+            self.create_line(xh, y0, xh, y1, fill='#c0392b', dash=(4, 2))
+            t_h = self._px_para_t(xh)
+            xt = max(x0 + 32, min(x1 - 32, xh))
+            id_texto = self.create_text(
+                xt, y0 + 4, text=f't = {rotulo_tempo(t_h)}', anchor='n',
+                font=('TkDefaultFont', 9, 'bold'), fill='#c0392b')
+            caixa = self.bbox(id_texto)
+            if caixa is not None:
+                pad = 3
+                id_fundo = self.create_rectangle(
+                    caixa[0] - pad, caixa[1] - pad, caixa[2] + pad, caixa[3] + pad,
+                    fill='white', outline='#c0392b')
+                self.tag_raise(id_texto, id_fundo)
 
 
 class QuadroRolavel(ttk.Frame):
@@ -1322,6 +1359,10 @@ class AbaAula2(AbaBase):
         super().__init__(master, app)
         self._gravador_deg = None
         self._deg_estado = None   # dict com o estado do ensaio de degrau em curso
+        self._mod_t = None        # arrays do CSV de degrau carregado para a validacao
+        self._mod_h = None        # do modelo de 1a ordem (secao "Validacao do modelo")
+        self._mod_qin = None
+        self._mod_csv = None
         self._monta()
 
     def _monta(self):
@@ -1387,6 +1428,39 @@ class AbaAula2(AbaBase):
         self.bt_deg.grid(row=4, column=0, columnspan=2, sticky='w', pady=(8, 0))
         self.lb_deg = ttk.Label(deg, text='parado.')
         self.lb_deg.grid(row=4, column=2, columnspan=4, sticky='w', pady=(8, 0))
+
+        mod = ttk.LabelFrame(self, text='Validacao do modelo de 1a ordem (Analise, Secao 2.4, itens 4-5)', padding=10)
+        mod.pack(fill='x', pady=(10, 0))
+        ttk.Label(
+            mod, text='Carregue o degrau.csv do ensaio acima e informe os valores que voce\n'
+                      'ja calculou na Analise (h0, q_in0, q_in1 da Tab. de ponto de operacao,\n'
+                      'e K, tau do modelo linearizado) para gerar um PDF sobrepondo a curva\n'
+                      'medida a curva simulada do modelo. O instante do degrau e localizado\n'
+                      'automaticamente pelo salto em FT2 (qin_lpm) nos dados carregados.',
+            justify='left').grid(row=0, column=0, columnspan=4, sticky='w', pady=(0, 8))
+
+        campos_mod = (
+            ('h0 (mm)', 'var_mod_h0'),
+            ('q_in0 (L/min)', 'var_mod_qin0'),
+            ('q_in1 (L/min)', 'var_mod_qin1'),
+            ('K (mm/(L/min))', 'var_mod_K'),
+            ('tau (s)', 'var_mod_tau'),
+        )
+        for i, (rotulo, nome) in enumerate(campos_mod):
+            var = tk.StringVar(value='')
+            setattr(self, nome, var)
+            ttk.Label(mod, text=rotulo + ':').grid(row=1 + i // 3, column=2 * (i % 3), sticky='w')
+            ttk.Entry(mod, textvariable=var, width=8).grid(
+                row=1 + i // 3, column=2 * (i % 3) + 1, sticky='w', padx=(4, 20))
+
+        self.bt_mod_carrega = ttk.Button(
+            mod, text='Carregar CSV do Ensaio de Degrau', command=self._carrega_csv_degrau)
+        self.bt_mod_carrega.grid(row=3, column=0, columnspan=2, sticky='w', pady=(8, 0))
+        self.bt_mod_grafico = ttk.Button(
+            mod, text='Gerar Gráfico Comparativo (PDF)', command=self._gera_grafico_modelo_degrau)
+        self.bt_mod_grafico.grid(row=3, column=2, columnspan=2, sticky='w', pady=(8, 0))
+        self.lb_mod = ttk.Label(mod, text='nenhum CSV carregado.', justify='left')
+        self.lb_mod.grid(row=4, column=0, columnspan=4, sticky='w', pady=(8, 0))
 
     # -- ensaio de esvaziamento ---------------------------------------------
 
@@ -1537,7 +1611,11 @@ class AbaAula2(AbaBase):
             ax_h.plot(t, y, '-', linewidth=1.5, label=nome)
         ax_h.set_ylabel('$h$  [mm]')
         ax_h.set_title('Ensaio de esvaziamento: h(t) contra tres modelos de dreno')
-        ax_h.legend()
+        # Tambem fora do eixo, a direita, e no mesmo x da legenda de baixo -
+        # com sharex, uma legenda so no painel de baixo deixaria os dois
+        # eixos com larguras diferentes (o de cima ficaria mais largo).
+        ax_h.legend(fontsize=8, loc='upper left', bbox_to_anchor=(1.02, 1.0),
+                   borderaxespad=0.0)
         ax_h.grid(True, alpha=0.3)
 
         for nome, y in curvas:
@@ -1549,8 +1627,14 @@ class AbaAula2(AbaBase):
         ax_res.axhline(0.0, color='0.5', linewidth=0.8)
         ax_res.set_xlabel('$t$  [s]')
         ax_res.set_ylabel(r'residuo  $h - \mathrm{modelo}$  [mm]')
-        ax_res.legend(fontsize=8)
+        # Legenda fora do eixo (a direita): dentro do eixo ela sempre acaba
+        # em cima de alguma curva ou do texto abaixo, dependendo dos dados
+        # de cada ensaio - 'loc=best' nao tem um canto livre garantido aqui.
+        ax_res.legend(fontsize=8, loc='upper left', bbox_to_anchor=(1.02, 1.0),
+                      borderaxespad=0.0)
         ax_res.grid(True, alpha=0.3)
+        # Texto no canto inferior esquerdo, DENTRO do eixo: com a legenda
+        # movida para fora, esse canto fica livre.
         ax_res.text(
             0.02, 0.03,
             'repare o arco no residuo da reta: e onde a curvatura de Torricelli\n'
@@ -1559,7 +1643,7 @@ class AbaAula2(AbaBase):
             transform=ax_res.transAxes, fontsize=7, va='bottom', ha='left')
 
         fig.tight_layout()
-        fig.savefig(caminho, dpi=150)
+        fig.savefig(caminho, dpi=150, bbox_inches='tight')
         plt.close(fig)
         return None
 
@@ -1676,6 +1760,135 @@ class AbaAula2(AbaBase):
 
             if estado['dur'] is not None and trel >= estado['dur']:
                 self._encerra_deg('duracao atingida')
+
+    # -- validacao do modelo de 1a ordem -------------------------------------
+
+    def _le_csv_degrau(self, caminho):
+        """Le as colunas t_s, h_mm e qin_lpm de um degrau.csv exportado do
+        grafico ao vivo ou gravado por `GravadorEnsaio` - ambos os schemas
+        (COLUNAS_EXPORTACAO e COLUNAS_ENSAIO) tem essas tres colunas."""
+        import numpy as np
+        t, h, qin = [], [], []
+        with open(caminho, newline='') as arquivo:
+            leitor = csv.DictReader(arquivo)
+            faltando = [c for c in ('t_s', 'h_mm', 'qin_lpm')
+                        if leitor.fieldnames is None or c not in leitor.fieldnames]
+            if faltando:
+                raise ValueError(
+                    f'{caminho} nao tem a(s) coluna(s) {", ".join(faltando)}. Ele foi '
+                    'exportado do grafico ao vivo (botao "exportar dados") ou gravado '
+                    'pelo ensaio de degrau deste hub?')
+            for linha in leitor:
+                t.append(float(linha['t_s']))
+                h.append(float(linha['h_mm']))
+                qin.append(float(linha['qin_lpm']))
+        if len(t) < 2:
+            raise ValueError(f'{caminho} tem menos de duas amostras.')
+        return np.array(t), np.array(h), np.array(qin)
+
+    def _carrega_csv_degrau(self):
+        caminho_csv = filedialog.askopenfilename(
+            title='Abrir CSV do ensaio de degrau',
+            initialfile='degrau.csv',
+            filetypes=[('CSV', '*.csv'), ('todos os arquivos', '*.*')])
+        if not caminho_csv:
+            return
+        try:
+            t, h, qin = self._le_csv_degrau(caminho_csv)
+        except (OSError, ValueError) as erro:
+            messagebox.showerror('CSV invalido', str(erro))
+            return
+        self._mod_t, self._mod_h, self._mod_qin = t, h, qin
+        self._mod_csv = caminho_csv
+        self.lb_mod.configure(
+            text=f'{os.path.basename(caminho_csv)} carregado: {len(t)} amostras.')
+
+    def _gera_grafico_modelo_degrau(self):
+        if self._mod_t is None:
+            messagebox.showerror(
+                'Nenhum CSV carregado',
+                'Carregue primeiro o CSV do ensaio de degrau (botao acima).')
+            return
+
+        try:
+            h0 = self._le_float(self.var_mod_h0, 'h0 (mm)')
+            qin0 = self._le_float(self.var_mod_qin0, 'q_in0 (L/min)')
+            qin1 = self._le_float(self.var_mod_qin1, 'q_in1 (L/min)')
+            K = self._le_float(self.var_mod_K, 'K (mm/(L/min))')
+            tau = self._le_float(self.var_mod_tau, 'tau (s)', 1e-6)
+        except ValueError as erro:
+            messagebox.showerror('Parametro invalido', str(erro))
+            return
+        if abs(qin1 - qin0) < 1e-9:
+            messagebox.showerror(
+                'Parametro invalido',
+                'q_in0 e q_in1 estao iguais - nao ha degrau para sincronizar nem '
+                'simular.')
+            return
+
+        t, h, qin = self._mod_t, self._mod_h, self._mod_qin
+        meio = (qin0 + qin1) / 2.0
+        import numpy as np
+        cruza = (qin >= meio) if qin1 > qin0 else (qin <= meio)
+        if not cruza.any():
+            messagebox.showerror(
+                'Degrau nao encontrado',
+                'Nao foi possivel localizar o salto de FT2 (qin_lpm) nos dados '
+                'carregados, usando o limiar (q_in0 + q_in1) / 2. Confira se o CSV '
+                'cobre o instante do degrau e se q_in0/q_in1 correspondem aos '
+                'patamares reais do ensaio.')
+            return
+        i_deg = int(np.argmax(cruza))
+        t_deg = t[i_deg]
+
+        h_sim = np.where(
+            t < t_deg, h0,
+            h0 + K * (qin1 - qin0) * (1.0 - np.exp(-(t - t_deg) / tau)))
+
+        base = os.path.splitext(os.path.basename(self._mod_csv))[0]
+        caminho_pdf = filedialog.asksaveasfilename(
+            title='Salvar grafico comparativo (medido x modelo de 1a ordem)',
+            defaultextension='.pdf', initialfile=f'{base}-modelo.pdf',
+            filetypes=[('PDF', '*.pdf')])
+        if not caminho_pdf:
+            return
+
+        erro = self._salva_pdf_modelo_degrau(caminho_pdf, t, h, h_sim, t_deg)
+        if erro:
+            messagebox.showerror('Nao foi possivel gerar o grafico', erro)
+            return
+
+        pos_deg = t >= t_deg
+        rms = float(np.sqrt(np.mean((h[pos_deg] - h_sim[pos_deg]) ** 2)))
+        self.lb_mod.configure(
+            text=f'grafico salvo em {caminho_pdf}\n'
+                 f'degrau localizado em t = {t_deg:.1f} s; '
+                 f'RMS medido-modelo (t >= t do degrau) = {rms:.2f} mm.',
+            justify='left')
+
+    def _salva_pdf_modelo_degrau(self, caminho, t, h, h_sim, t_deg):
+        try:
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+        except ImportError as erro:
+            return str(erro)
+
+        fig, ax = plt.subplots(figsize=(7, 4.5))
+        ax.plot(t, h, 'o', markersize=3, color='0.35', label='medido')
+        ax.plot(t, h_sim, '-', linewidth=1.5, label='modelo de 1a ordem')
+        ax.axvline(t_deg, color='0.5', linestyle=':', linewidth=1.0,
+                   label=f'degrau detectado (t = {t_deg:.1f} s)')
+        ax.set_xlabel('$t$  [s]')
+        ax.set_ylabel('$h$  [mm]')
+        ax.set_title('Ensaio de degrau: medido contra modelo linearizado de 1a ordem')
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+        fig.tight_layout()
+        fig.savefig(caminho, dpi=150)
+        plt.close(fig)
+        return None
 
 
 class AbaAula3(AbaBase):
