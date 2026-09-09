@@ -757,8 +757,15 @@ class Grafico(tk.Canvas):
             xe = max(x0, min(x1, self._sel_inicio))
             xd = max(x0, min(x1, self._sel_atual))
             xa, xb = min(xe, xd), max(xe, xd)
-            self.create_line(xa, y0, xa, y1, fill='#c0392b', dash=(4, 2))
-            self.create_line(xb, y0, xb, y1, fill='#c0392b', dash=(4, 2))
+            # width=2 (nao o padrao 1px) e tag_raise explicito: coincidindo
+            # em x com a borda do retangulo de selecao, uma linha de 1px
+            # pode ficar por baixo dela dependendo do backend do Tk (visto
+            # no Aqua/macOS) mesmo tendo sido criada depois - forcar o topo
+            # da pilha resolve independente da plataforma.
+            id_la = self.create_line(xa, y0, xa, y1, fill='#c0392b', width=2, dash=(4, 2))
+            id_lb = self.create_line(xb, y0, xb, y1, fill='#c0392b', width=2, dash=(4, 2))
+            self.tag_raise(id_la)
+            self.tag_raise(id_lb)
             delta_t = abs(self._px_para_t(xb) - self._px_para_t(xa))
             y_seta = (y0 + y1) / 2
             if xb - xa > 24:
