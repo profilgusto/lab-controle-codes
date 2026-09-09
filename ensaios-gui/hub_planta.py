@@ -1446,9 +1446,11 @@ class AbaAula2(AbaBase):
             ('K (mm/(L/min))', 'var_mod_K'),
             ('tau (s)', 'var_mod_tau'),
         )
+        self._vars_mod = []
         for i, (rotulo, nome) in enumerate(campos_mod):
             var = tk.StringVar(value='')
             setattr(self, nome, var)
+            self._vars_mod.append(var)
             ttk.Label(mod, text=rotulo + ':').grid(row=1 + i // 3, column=2 * (i % 3), sticky='w')
             ttk.Entry(mod, textvariable=var, width=8).grid(
                 row=1 + i // 3, column=2 * (i % 3) + 1, sticky='w', padx=(4, 20))
@@ -1456,11 +1458,21 @@ class AbaAula2(AbaBase):
         self.bt_mod_carrega = ttk.Button(
             mod, text='Carregar CSV do Ensaio de Degrau', command=self._carrega_csv_degrau)
         self.bt_mod_carrega.grid(row=3, column=0, columnspan=2, sticky='w', pady=(8, 0))
+        # So habilitado com um CSV carregado e os cinco campos preenchidos com
+        # numeros validos - ver `_atualiza_estado_mod_grafico`, chamado a cada
+        # edicao de campo (trace abaixo) e depois de carregar/descartar o CSV.
         self.bt_mod_grafico = ttk.Button(
-            mod, text='Gerar Gráfico Comparativo (PDF)', command=self._gera_grafico_modelo_degrau)
+            mod, text='Gerar Gráfico Comparativo (PDF)', command=self._gera_grafico_modelo_degrau,
+            state='disabled')
         self.bt_mod_grafico.grid(row=3, column=2, columnspan=2, sticky='w', pady=(8, 0))
         self.lb_mod = ttk.Label(mod, text='nenhum CSV carregado.', justify='left')
         self.lb_mod.grid(row=4, column=0, columnspan=4, sticky='w', pady=(8, 0))
+
+        # Registrado so agora, com bt_mod_grafico ja existente: o callback do
+        # trace le/escreve esse botao, entao precisa dele pronto antes de
+        # qualquer 'write' poder disparar.
+        for var in self._vars_mod:
+            var.trace_add('write', self._atualiza_estado_mod_grafico)
 
     # -- ensaio de esvaziamento ---------------------------------------------
 
@@ -1802,6 +1814,26 @@ class AbaAula2(AbaBase):
         self._mod_csv = caminho_csv
         self.lb_mod.configure(
             text=f'{os.path.basename(caminho_csv)} carregado: {len(t)} amostras.')
+        self._atualiza_estado_mod_grafico()
+
+    def _atualiza_estado_mod_grafico(self, *_args):
+        """Habilita 'Gerar Grafico Comparativo' so quando ha um CSV carregado
+        E os cinco campos numericos tem valores validos - chamado pelo trace
+        de cada var_mod_* e apos carregar (ou falhar ao carregar) um CSV."""
+        habilitado = self._mod_t is not None and all(
+            self._campo_mod_valido(var) for var in self._vars_mod)
+        self.bt_mod_grafico.configure(state='normal' if habilitado else 'disabled')
+
+    @staticmethod
+    def _campo_mod_valido(var):
+        texto = var.get().strip()
+        if not texto:
+            return False
+        try:
+            float(texto.replace(',', '.'))
+        except ValueError:
+            return False
+        return True
 
     def _gera_grafico_modelo_degrau(self):
         if self._mod_t is None:
