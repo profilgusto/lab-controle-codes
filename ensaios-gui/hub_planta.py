@@ -1960,6 +1960,14 @@ class AbaAula2(AbaBase):
 class AbaAula3(AbaBase):
     """Aula 3 - varredura estatica do atuador e escada de degraus (Secoes 3.3.1 e 3.3.2)."""
 
+    # Janela sobre a qual a escada mede a DERIVA do nivel no fim de cada
+    # patamar. O roteiro da Aula 3 pede um criterio quantitativo (e nao
+    # visual) de acomodacao - "h deve variar menos que uns poucos milimetros
+    # ao longo dos ultimos 30 s do patamar" -, e e este numero que o hub
+    # coloca na tabela ao vivo e no CSV de equilibrios. Sem ele o aluno so
+    # tem o olho sobre o grafico, que e justamente o que o roteiro proibe.
+    DERIVA_JANELA_S = 30.0
+
     def __init__(self, master, app):
         super().__init__(master, app)
         self._var_estado = None
@@ -2008,13 +2016,24 @@ class AbaAula3(AbaBase):
         self.lb_var = ttk.Label(var, text='parado.')
         self.lb_var.grid(row=4, column=2, columnspan=4, sticky='w', pady=(8, 0))
 
+        # A varredura padrao (0 a 100 % de 10 em 10) rende 21 patamares, e o
+        # roteiro pede que TODAS as 21 linhas sejam transcritas. Com altura 5 e
+        # sem barra de rolagem, as primeiras sumiam de vista sem nenhum indicio
+        # de que ainda estavam la - dai o quadro com barra e a altura maior.
+        quadro_var = ttk.Frame(var)
+        quadro_var.grid(row=5, column=0, columnspan=6, sticky='nsew', pady=(8, 0))
+        quadro_var.rowconfigure(0, weight=1)
+        quadro_var.columnconfigure(0, weight=1)
         self.tabela_var = ttk.Treeview(
-            var, columns=('u', 'sentido', 'qin', 'h'), show='headings', height=5)
+            quadro_var, columns=('u', 'sentido', 'qin', 'h'), show='headings', height=11)
         self.tabela_var.heading('u', text='u [%]')
         self.tabela_var.heading('sentido', text='sentido')
         self.tabela_var.heading('qin', text='qin medio [L/min]')
         self.tabela_var.heading('h', text='h medio [mm]')
-        self.tabela_var.grid(row=5, column=0, columnspan=6, sticky='nsew', pady=(8, 0))
+        barra_var = ttk.Scrollbar(quadro_var, orient='vertical', command=self.tabela_var.yview)
+        self.tabela_var.configure(yscrollcommand=barra_var.set)
+        self.tabela_var.grid(row=0, column=0, sticky='nsew')
+        barra_var.grid(row=0, column=1, sticky='ns')
 
         esc = ttk.LabelFrame(self, text='Escada de degraus (Secao 3.3.2)', padding=10)
         esc.pack(fill='both', expand=True)
@@ -2023,18 +2042,21 @@ class AbaAula3(AbaBase):
                       'duracao, gravando um CSV continuo (t_s, lt_contas, h_mm, ft2_contas,\n'
                       'qin_lpm, pump2_pct) e, num segundo arquivo, o instante de inicio, o h de\n'
                       'equilibrio e o qin de equilibrio de cada patamar (Tab. 3.2 e Tab. 3.3).\n'
+                      'Cada patamar traz ainda a DERIVA de h nos seus ultimos 30 s: e o\n'
+                      'criterio quantitativo de acomodacao do roteiro - poucos mm significam\n'
+                      'patamar acomodado; a linha fica em vermelho se passar de 3 mm.\n'
                       'Nos dois arquivos, h sai em mm pela calibracao de LT ativa no painel de\n'
                       'leituras - a mesma da curva h do grafico.',
             justify='left').grid(row=0, column=0, columnspan=6, sticky='w', pady=(0, 8))
 
         ttk.Label(esc, text='sequencia de comandos (%):').grid(row=1, column=0, sticky='w')
-        self.var_esc_seq = tk.StringVar(value='40,60,80,60,100')
+        self.var_esc_seq = tk.StringVar(value='50,70,85,70,50')
         ttk.Entry(esc, textvariable=self.var_esc_seq, width=28).grid(
             row=1, column=1, columnspan=3, sticky='w', padx=(4, 0))
 
         campos_esc = (
-            # 600 s (~4 tau nos patamares mais altos, tau ~100-160 s com o
-            # dreno totalmente aberto) - ver Secao 3.3.2 do roteiro da Aula 3.
+            # 600 s (~4 tau no patamar mais alto; o degrau 50->70 % da Aula 2
+            # teve tau ~130 s e chegou a 98 % em ~510 s) - ver roteiro da Aula 3.
             ('duracao por patamar (s)', 'var_esc_dur', '600'),
             ('periodo T (s)', 'var_esc_T', '1'),
             ('media dos ultimos (s)', 'var_esc_media', '10'),
@@ -2057,10 +2079,15 @@ class AbaAula3(AbaBase):
         self.lb_esc.grid(row=4, column=2, columnspan=4, sticky='w', pady=(8, 0))
 
         self.tabela_esc = ttk.Treeview(
-            esc, columns=('patamar', 'u', 't0', 'heq', 'qineq'), show='headings', height=6)
+            esc, columns=('patamar', 'u', 't0', 'heq', 'qineq', 'deriva'),
+            show='headings', height=6)
         for coluna, texto in (('patamar', 'patamar'), ('u', 'u [%]'), ('t0', 't inicio [s]'),
-                              ('heq', 'h_eq [mm]'), ('qineq', 'qin_eq [L/min]')):
+                              ('heq', 'h_eq [mm]'), ('qineq', 'qin_eq [L/min]'),
+                              ('deriva', f'deriva {self.DERIVA_JANELA_S:.0f} s [mm]')):
             self.tabela_esc.heading(coluna, text=texto)
+        # Patamar que ainda nao acomodou sai em vermelho: e o unico aviso que o
+        # aluno recebe a tempo de refazer a escada com patamares mais longos.
+        self.tabela_esc.tag_configure('instavel', foreground='#a11')
         self.tabela_esc.grid(row=5, column=0, columnspan=6, sticky='nsew', pady=(8, 0))
         esc.rowconfigure(5, weight=1)
         esc.columnconfigure(5, weight=1)
@@ -2083,6 +2110,23 @@ class AbaAula3(AbaBase):
         vistos = [v for tt, v in amostras if trel - tt <= media_s]
         return sum(vistos) / len(vistos) if vistos else float('nan')
 
+    def _deriva_h(self, buffer, trel):
+        """Quanto h ainda andou nos ultimos `DERIVA_JANELA_S` s do patamar.
+
+        Positivo = ainda subindo; negativo = ainda descendo. E a traducao
+        numerica do criterio de acomodacao do roteiro, que de outro modo o
+        aluno so conseguiria julgar no olho, sobre a curva do grafico.
+        """
+        janela = [hh for tt, hh, _q in buffer if trel - tt <= self.DERIVA_JANELA_S]
+        if len(janela) < 2:
+            return float('nan')
+        return janela[-1] - janela[0]
+
+    @staticmethod
+    def _mmss(segundos):
+        segundos = max(0, int(round(segundos)))
+        return f'{segundos // 60:d}:{segundos % 60:02d}'
+
     # -- varredura estatica ----------------------------------------------
 
     def _alterna_var(self):
@@ -2097,7 +2141,9 @@ class AbaAula3(AbaBase):
             fim = self._le_float(self.var_var_fim, 'comando final (%)', 0, 100)
             passo = self._le_float(self.var_var_passo, 'passo (%)', 1e-6, 100)
             perm = self._le_float(self.var_var_perm, 'permanencia por patamar (s)', 1e-6)
-            media = self._le_float(self.var_var_media, 'media dos ultimos (s)', 1e-6)
+            # como na escada, a janela de media tem de caber dentro do patamar:
+            # acima disso ela so mediria o patamar inteiro, transitorio incluso.
+            media = self._le_float(self.var_var_media, 'media dos ultimos (s)', 1e-6, perm)
         except ValueError as erro:
             messagebox.showerror('Parametro invalido', str(erro))
             return
@@ -2156,6 +2202,14 @@ class AbaAula3(AbaBase):
         h = self.app.contas_para_altura_ativa(valores['LT'])
         estado['buffer'].append((trel, qin, h))
 
+        idx_atual = estado['idx']
+        u_corrente, sentido_corrente = estado['lista'][idx_atual]
+        self.lb_var.configure(
+            text=f'patamar {idx_atual + 1}/{len(estado["lista"])}: PUMP2 = '
+                 f'{u_corrente:.0f} % ({sentido_corrente}) | faltam '
+                 f'{self._mmss(estado["permanencia"] - (trel - estado["t_inicio_patamar"]))} | '
+                 f'qin = {qin:.2f} L/min | h = {h:.1f} mm')
+
         if trel - estado['t_inicio_patamar'] >= estado['permanencia']:
             qin_medio = self._janela_media([(tt, qq) for tt, qq, _h in estado['buffer']],
                                            trel, estado['media_s'])
@@ -2166,8 +2220,10 @@ class AbaAula3(AbaBase):
             self._var_escritor.writerow([f'{u_atual:.1f}', sentido_atual,
                                          f'{qin_medio:.4f}', f'{h_medio:.2f}'])
             self._var_arquivo.flush()
-            self.tabela_var.insert('', 'end', values=(f'{u_atual:.0f}', sentido_atual,
-                                                       f'{qin_medio:.3f}', f'{h_medio:.1f}'))
+            linha = self.tabela_var.insert(
+                '', 'end', values=(f'{u_atual:.0f}', sentido_atual,
+                                   f'{qin_medio:.3f}', f'{h_medio:.1f}'))
+            self.tabela_var.see(linha)
 
             idx += 1
             if idx >= len(estado['lista']):
@@ -2176,11 +2232,9 @@ class AbaAula3(AbaBase):
             estado['idx'] = idx
             estado['t_inicio_patamar'] = trel
             estado['buffer'].clear()
-            u_novo, sentido_novo = estado['lista'][idx]
+            u_novo, _sentido_novo = estado['lista'][idx]
             self.app.aplica_comando(100.0, u_novo)
-            self.lb_var.configure(
-                text=f'patamar {idx + 1}/{len(estado["lista"])}: PUMP2 -> {u_novo:.0f} % '
-                     f'({sentido_novo})')
+            # o rotulo em si e reescrito na proxima amostra, com o tempo restante
 
     # -- escada de degraus -------------------------------------------------
 
@@ -2196,7 +2250,7 @@ class AbaAula3(AbaBase):
             seq = [float(v.replace(',', '.')) for v in seq_txt.split(',') if v.strip()]
         except ValueError:
             messagebox.showerror('Sequencia invalida',
-                                 'Digite comandos separados por virgula, ex.: 40,60,80,60,100.')
+                                 'Digite comandos separados por virgula, ex.: 50,70,85,70,50.')
             return
         if len(seq) < 2:
             messagebox.showerror('Sequencia invalida',
@@ -2213,6 +2267,25 @@ class AbaAula3(AbaBase):
             messagebox.showerror('Parametro invalido', str(erro))
             return
 
+        # O roteiro da Aula 3 recorta cada degrau ("exportar dados") DEPOIS que a
+        # escada inteira termina - o que so funciona enquanto o ensaio couber no
+        # historico que o grafico mantem em memoria (JANELA_MAX_S). A escada
+        # padrao (5 x 600 s = 50 min) cabe com folga; avisar aqui evita perder os
+        # primeiros degraus so no fim de quase uma hora de bancada.
+        total_s = len(seq) * dur
+        if total_s > JANELA_MAX_S:
+            if not messagebox.askyesno(
+                    'Escada mais longa que o historico',
+                    f'Esta escada vai durar {total_s / 60:.0f} min ({len(seq)} patamares '
+                    f'de {dur / 60:.1f} min), mais que os {JANELA_MAX_S / 60:.0f} min de '
+                    'historico que o grafico mantem em memoria.\n\n'
+                    'O CSV continuo sai completo, mas os primeiros degraus ja terao saido '
+                    'do grafico quando a escada acabar - e e do grafico que sai o recorte '
+                    'de cada degrau ("exportar dados").\n\n'
+                    'Reduza a duracao por patamar, ou recorte os degraus iniciais ao longo '
+                    'do ensaio, sem esperar o fim.\n\nComecar assim mesmo?'):
+                return
+
         if not self.app.confirma_calibracao_lt('escada de degraus'):
             return
         if not self.app.pede_controle('Aula 3 - escada de degraus'):
@@ -2227,7 +2300,8 @@ class AbaAula3(AbaBase):
             h_fn=self.app.contas_para_altura_ativa)
         self._esc_arquivo_eq = open(caminho_eq, 'w', newline='')
         self._esc_escritor_eq = csv.writer(self._esc_arquivo_eq)
-        self._esc_escritor_eq.writerow(['patamar', 'u_pct', 't_inicio_s', 'h_eq_mm', 'qin_eq_lpm'])
+        self._esc_escritor_eq.writerow(
+            ['patamar', 'u_pct', 't_inicio_s', 'h_eq_mm', 'qin_eq_lpm', 'deriva_mm'])
         for item in self.tabela_esc.get_children():
             self.tabela_esc.delete(item)
 
@@ -2264,20 +2338,35 @@ class AbaAula3(AbaBase):
         qin = contas_para_vazao(valores['FT2'])
         estado['buffer'].append((trel, h, qin))
 
+        idx_atual = estado['idx']
+        self.lb_esc.configure(
+            text=f'patamar {idx_atual + 1}/{len(estado["seq"])}: PUMP2 = '
+                 f'{estado["seq"][idx_atual]:.0f} % desde t = '
+                 f'{estado["t_inicio_patamar"]:.0f} s | faltam '
+                 f'{self._mmss(estado["dur"] - (trel - estado["t_inicio_patamar"]))} | '
+                 f'h = {h:.1f} mm (deriva {self._deriva_h(estado["buffer"], trel):+.1f} mm '
+                 f'em {self.DERIVA_JANELA_S:.0f} s) | qin = {qin:.2f} L/min')
+
         if trel - estado['t_inicio_patamar'] >= estado['dur']:
             h_eq = self._janela_media([(tt, hh) for tt, hh, _q in estado['buffer']],
                                       trel, estado['media_s'])
             qin_eq = self._janela_media([(tt, qq) for tt, _h, qq in estado['buffer']],
                                         trel, estado['media_s'])
+            deriva = self._deriva_h(estado['buffer'], trel)
             idx = estado['idx']
             self._esc_escritor_eq.writerow([
                 idx + 1, f'{estado["seq"][idx]:.1f}', f'{estado["t_inicio_patamar"]:.2f}',
-                f'{h_eq:.2f}', f'{qin_eq:.4f}',
+                f'{h_eq:.2f}', f'{qin_eq:.4f}', f'{deriva:.2f}',
             ])
             self._esc_arquivo_eq.flush()
-            self.tabela_esc.insert('', 'end', values=(
+            # "uns poucos milimetros" do roteiro: acima de 3 mm o patamar ainda
+            # esta andando, e tanto o h_eq quanto o delta_h_inf do degrau
+            # seguinte saem contaminados.
+            tags = ('instavel',) if abs(deriva) > 3.0 else ()
+            linha = self.tabela_esc.insert('', 'end', tags=tags, values=(
                 idx + 1, f'{estado["seq"][idx]:.0f}', f'{estado["t_inicio_patamar"]:.0f}',
-                f'{h_eq:.1f}', f'{qin_eq:.3f}'))
+                f'{h_eq:.1f}', f'{qin_eq:.3f}', f'{deriva:+.1f}'))
+            self.tabela_esc.see(linha)
 
             idx += 1
             if idx >= len(estado['seq']):
@@ -2288,9 +2377,7 @@ class AbaAula3(AbaBase):
             estado['buffer'].clear()
             u_novo = estado['seq'][idx]
             self.app.aplica_comando(100.0, u_novo)
-            self.lb_esc.configure(
-                text=f'patamar {idx + 1}/{len(estado["seq"])}: PUMP2 -> {u_novo:.0f} % '
-                     f'(degrau em t = {trel:.0f} s)')
+            # o rotulo em si e reescrito na proxima amostra, com o tempo restante
 
     # -- despacho ------------------------------------------------------
 

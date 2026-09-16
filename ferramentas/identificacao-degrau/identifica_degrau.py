@@ -31,7 +31,7 @@ de K_b*K da Eq. 8 da Aula 3) e devolve, para o degrau de identificacao
 (`--degrau-ref`, padrao 1) e para todos os demais (validacao), o RMSE e o
 erro maximo de cada modelo (Eq. 7), no formato da Tab. 3.5:
 
-    python3 identificacao-degrau/identifica_degrau.py escada_degraus.csv --compara 1.85 42.0
+    python3 identificacao-degrau/identifica_degrau.py escada_degraus.csv --compara 0.73 25.0
 
 Sem `--sem-grafico`, `--compara` tambem abre um grafico por degrau com as
 duas simulacoes sobrepostas aos dados medidos; `--figura prefixo` salva um
