@@ -2132,6 +2132,12 @@ class AbaAula3(AbaBase):
         self._var_estado = None
         self._var_arquivo = None
         self._var_escritor = None
+        # Patamares da ultima varredura, ja em numeros: (u, sentido, qin, h).
+        # A tabela ao vivo guarda os mesmos valores, mas formatados como texto
+        # e arredondados para exibicao - o grafico le daqui para nao depender
+        # dessa formatacao nem do CSV, que ja foi fechado quando o aluno
+        # clica em "salvar grafico".
+        self._var_pontos = []
         self._esc_estado = None
         self._esc_gravador = None
         self._esc_arquivo_eq = None
@@ -2147,7 +2153,12 @@ class AbaAula3(AbaBase):
                       'permanencia e gravando a media de FT2 dos ultimos segundos de cada um.\n'
                       'Registra tambem o h medio (em mm, pela calibracao de LT ativa) de cada\n'
                       'patamar - o tanque enche durante a varredura, e e essa coluna que mostra\n'
-                      'que qin(u) nao depende do nivel.\n'
+                      'que qin(u) nao depende do nivel. ATENCAO: essa coluna h NAO e a curva\n'
+                      'estatica do processo - com 20 s por patamar e tau > 100 s, o nivel esta\n'
+                      'sempre em transitorio, e subida e descida fecham um laco largo que NAO e\n'
+                      'histerese. heq(u) vem da escada abaixo, de 600 s por patamar.\n'
+                      'O botao "salvar grafico qin x u" gera a figura da curva do atuador,\n'
+                      'com subida e descida como series separadas (item 1 da analise).\n'
                       'Exige VALVE em 100 % (liberado pelo slider/botao do topo da janela).',
             justify='left').grid(row=0, column=0, columnspan=6, sticky='w', pady=(0, 8))
 
@@ -2155,7 +2166,11 @@ class AbaAula3(AbaBase):
             ('comando inicial (%)', 'var_var_ini', '0'),
             ('comando final (%)', 'var_var_fim', '100'),
             ('passo (%)', 'var_var_passo', '5'),
-            ('permanencia por patamar (s)', 'var_var_perm', '15'),
+            # 20 s: o que o roteiro da Aula 3 pede para a varredura de 0 a 100 %.
+            # FT2 acomoda em ~3 s, entao sobra folga - MENOS para o patamar em
+            # que a bomba parte (~15 %), que nao acomoda nem em 20 s. Por isso o
+            # roteiro pede uma segunda varredura, fina, de 10 a 25 % com 60 s.
+            ('permanencia por patamar (s)', 'var_var_perm', '20'),
             ('media dos ultimos (s)', 'var_var_media', '5'),
         )
         for i, (rotulo, nome, padrao) in enumerate(campos_var):
@@ -2175,15 +2190,21 @@ class AbaAula3(AbaBase):
 
         self.bt_var = ttk.Button(var, text='iniciar varredura', command=self._alterna_var)
         self.bt_var.grid(row=4, column=0, columnspan=2, sticky='w', pady=(8, 0))
+        # O grafico so faz sentido depois que ha patamares medidos, e a
+        # varredura dura minutos - por isso o botao nasce desabilitado e e
+        # liberado pela primeira linha gravada em `_atualiza_var`.
+        self.bt_var_graf = ttk.Button(var, text='salvar grafico qin x u',
+                                      command=self._salva_grafico_var, state='disabled')
+        self.bt_var_graf.grid(row=4, column=2, columnspan=2, sticky='w', pady=(8, 0))
         self.lb_var = ttk.Label(var, text='parado.')
-        self.lb_var.grid(row=4, column=2, columnspan=4, sticky='w', pady=(8, 0))
+        self.lb_var.grid(row=5, column=0, columnspan=6, sticky='w', pady=(4, 0))
 
-        # A varredura padrao (0 a 100 % de 10 em 10) rende 21 patamares, e o
-        # roteiro pede que TODAS as 21 linhas sejam transcritas. Com altura 5 e
+        # A varredura padrao (0 a 100 % de 5 em 5) rende 41 patamares, e o
+        # roteiro pede que TODAS as 41 linhas sejam conferidas. Com altura 5 e
         # sem barra de rolagem, as primeiras sumiam de vista sem nenhum indicio
         # de que ainda estavam la - dai o quadro com barra e a altura maior.
         quadro_var = ttk.Frame(var)
-        quadro_var.grid(row=5, column=0, columnspan=6, sticky='nsew', pady=(8, 0))
+        quadro_var.grid(row=6, column=0, columnspan=6, sticky='nsew', pady=(8, 0))
         quadro_var.rowconfigure(0, weight=1)
         quadro_var.columnconfigure(0, weight=1)
         self.tabela_var = ttk.Treeview(
@@ -2358,6 +2379,8 @@ class AbaAula3(AbaBase):
         self._var_escritor.writerow(['u_pct', 'sentido', 'qin_lpm', 'h_mm'])
         for item in self.tabela_var.get_children():
             self.tabela_var.delete(item)
+        self._var_pontos = []
+        self.bt_var_graf.configure(state='disabled')
 
         self._var_estado = {
             'lista': lista, 'idx': 0, 't0': None, 't_inicio_patamar': 0.0,
@@ -2366,6 +2389,81 @@ class AbaAula3(AbaBase):
         self.app.aplica_comando(100.0, lista[0][0])
         self.bt_var.configure(text='parar varredura')
         self.lb_var.configure(text=f'patamar 1/{len(lista)}: PUMP2 -> {lista[0][0]:.0f} % (subida)')
+
+    def _salva_grafico_var(self):
+        """Grafico da curva estatica do atuador: qin contra u, nos dois sentidos.
+
+        E a figura do item 1 da analise da Aula 3. Sai com subida e descida
+        como series separadas de proposito: a comparacao entre as duas e o
+        que responde se ha histerese no atuador, e sobrepor tudo numa curva
+        so apagaria justamente essa informacao.
+
+        Le de `self._var_pontos`, nao do CSV: assim funciona tambem com a
+        varredura ainda em andamento (util para conferir a zona morta sem
+        esperar a descida inteira) e nao depende de o arquivo ainda estar
+        aberto.
+        """
+        if not self._var_pontos:
+            messagebox.showinfo(
+                'Nada a desenhar',
+                'Nenhum patamar foi medido ainda. Rode a varredura estatica '
+                'primeiro - o botao se habilita assim que o primeiro patamar '
+                'e gravado.')
+            return
+
+        base = os.path.splitext(os.path.basename(
+            self.var_var_arquivo.get().strip() or ARQUIVO_VARREDURA))[0]
+        caminho = filedialog.asksaveasfilename(
+            title='Salvar grafico da curva estatica do atuador (qin x u)',
+            defaultextension='.pdf', initialfile=f'{base}.pdf',
+            filetypes=[('PDF', '*.pdf'), ('PNG', '*.png')])
+        if not caminho:
+            return
+        # Mesmo cuidado dos demais botoes de exportar: alguns Tk/macOS nao
+        # aplicam `defaultextension` de forma confiavel.
+        if not os.path.splitext(caminho)[1]:
+            caminho += '.pdf'
+
+        erro = self._desenha_curva_atuador(caminho)
+        if erro:
+            messagebox.showerror('Nao foi possivel gerar o grafico', erro)
+            return
+        n_sub = sum(1 for _u, sent, _q, _h in self._var_pontos if sent == 'subida')
+        n_des = len(self._var_pontos) - n_sub
+        self.lb_var.configure(
+            text=f'grafico salvo em {caminho} '
+                 f'({n_sub} patamares de subida, {n_des} de descida).')
+
+    def _desenha_curva_atuador(self, caminho):
+        try:
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+        except ImportError as erro:
+            return (f'Nao foi possivel importar matplotlib para gerar o grafico:\n{erro}')
+
+        estilos = (('subida', 'o-', 'subida'), ('descida', 's--', 'descida'))
+        fig, ax = plt.subplots(figsize=(7, 4.5))
+        for sentido, estilo, rotulo in estilos:
+            pontos = [(u, q) for u, sent, q, _h in self._var_pontos if sent == sentido]
+            if not pontos:
+                continue
+            ax.plot([u for u, _q in pontos], [q for _u, q in pontos], estilo,
+                    markersize=4, linewidth=1.2, label=rotulo)
+        ax.set_xlabel('$u$  (comando de PUMP2)  [%]')
+        ax.set_ylabel('$q_{in}$  (FT2)  [L/min]')
+        ax.set_title('Curva estatica do atuador')
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=9)
+
+        try:
+            fig.tight_layout()
+            fig.savefig(caminho, dpi=150)
+        except Exception as erro:
+            return str(erro)
+        finally:
+            plt.close(fig)
+        return None
 
     def _encerra_var(self, motivo):
         n = len(self.tabela_var.get_children())
@@ -2398,10 +2496,15 @@ class AbaAula3(AbaBase):
             self._var_escritor.writerow([f'{u_atual:.1f}', sentido_atual,
                                          f'{qin_medio:.4f}', f'{h_medio:.2f}'])
             self._var_arquivo.flush()
+            # `:.1f` no comando, e nao `:.0f`: a varredura fina da zona morta
+            # que o roteiro pede anda de 2,5 em 2,5 %, e arredondar para
+            # inteiro colapsaria patamares distintos na mesma linha.
             linha = self.tabela_var.insert(
-                '', 'end', values=(f'{u_atual:.0f}', sentido_atual,
+                '', 'end', values=(f'{u_atual:.1f}', sentido_atual,
                                    f'{qin_medio:.3f}', f'{h_medio:.1f}'))
             self.tabela_var.see(linha)
+            self._var_pontos.append((u_atual, sentido_atual, qin_medio, h_medio))
+            self.bt_var_graf.configure(state='normal')
 
             idx += 1
             if idx >= len(estado['lista']):
