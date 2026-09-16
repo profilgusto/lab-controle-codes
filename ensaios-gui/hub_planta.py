@@ -142,6 +142,12 @@ ALTURA_PASSO_MM = 50.0   # espacamento dos rotulos do eixo de h
 # atuador. O aluno escolhe pasta e nome num dialogo antes de o ensaio comecar.
 ARQUIVO_VARREDURA = 'curva-atuador_dados-consolidados.csv'
 
+# Nome sugerido para o CSV continuo da escada de degraus (Aula 3). Como na
+# varredura, pasta e nome saem de um dialogo aberto no "iniciar escada"; o
+# arquivo de equilibrios (Tab. 3.2) e derivado deste, com o sufixo
+# `_equilibrios`.
+ARQUIVO_ESCADA = 'escada_degraus.csv'
+
 
 def faixa_ajustada(valores, span_minimo, reserva):
     """(lo, hi) que enquadra `valores` com folga de 5 % de cada lado.
@@ -2251,15 +2257,14 @@ class AbaAula3(AbaBase):
             ttk.Entry(esc, textvariable=v, width=8).grid(
                 row=2, column=2 * i + 1, sticky='w', padx=(4, 20), pady=(6, 0))
 
-        ttk.Label(esc, text='arquivo:').grid(row=3, column=0, sticky='w')
-        self.var_esc_arquivo = tk.StringVar(value='escada_degraus.csv')
-        ttk.Entry(esc, textvariable=self.var_esc_arquivo, width=24).grid(
-            row=3, column=1, columnspan=3, sticky='w', padx=(4, 0))
-
+        # Sem campo de arquivo: pasta e nome sao escolhidos num dialogo de
+        # "salvar como" aberto pelo proprio "iniciar escada", como na
+        # varredura acima. O caminho efetivamente usado aparece no rotulo de
+        # status ao fim do ensaio.
         self.bt_esc = ttk.Button(esc, text='iniciar escada', command=self._alterna_esc)
-        self.bt_esc.grid(row=4, column=0, columnspan=2, sticky='w', pady=(8, 0))
+        self.bt_esc.grid(row=3, column=0, columnspan=2, sticky='w', pady=(8, 0))
         self.lb_esc = ttk.Label(esc, text='parado.')
-        self.lb_esc.grid(row=4, column=2, columnspan=4, sticky='w', pady=(8, 0))
+        self.lb_esc.grid(row=3, column=2, columnspan=4, sticky='w', pady=(8, 0))
 
         self.tabela_esc = ttk.Treeview(
             esc, columns=('patamar', 'u', 't0', 'heq', 'qineq', 'deriva'),
@@ -2271,8 +2276,8 @@ class AbaAula3(AbaBase):
         # Patamar que ainda nao acomodou sai em vermelho: e o unico aviso que o
         # aluno recebe a tempo de refazer a escada com patamares mais longos.
         self.tabela_esc.tag_configure('instavel', foreground='#a11')
-        self.tabela_esc.grid(row=5, column=0, columnspan=6, sticky='nsew', pady=(8, 0))
-        esc.rowconfigure(5, weight=1)
+        self.tabela_esc.grid(row=4, column=0, columnspan=6, sticky='nsew', pady=(8, 0))
+        esc.rowconfigure(4, weight=1)
         esc.columnconfigure(5, weight=1)
 
     # -- helpers -------------------------------------------------------
@@ -2592,12 +2597,28 @@ class AbaAula3(AbaBase):
 
         if not self.app.confirma_calibracao_lt('escada de degraus'):
             return
-        if not self.app.pede_controle('Aula 3 - escada de degraus'):
-            return
 
-        caminho = self.var_esc_arquivo.get().strip() or 'escada_degraus.csv'
+        # Como na varredura: onde salvar e escolhido ANTES de tomar o controle
+        # da planta, para que cancelar o dialogo nao deixe a bomba reservada
+        # por um ensaio que nao vai acontecer. O dialogo ja cuida da
+        # confirmacao de sobrescrita do CSV continuo; o arquivo de
+        # equilibrios e derivado dele e sobrescrito junto.
+        caminho = filedialog.asksaveasfilename(
+            title='Salvar CSV continuo da escada de degraus',
+            defaultextension='.csv', initialfile=os.path.basename(ARQUIVO_ESCADA),
+            initialdir=os.path.dirname(os.path.abspath(ARQUIVO_ESCADA)),
+            filetypes=[('CSV', '*.csv'), ('todos os arquivos', '*.*')])
+        if not caminho:
+            return
+        # Alguns Tk/macOS nao aplicam `defaultextension` de forma confiavel -
+        # mesmo cuidado da varredura e do botao de exportar grafico da Aula 1.
+        if not os.path.splitext(caminho)[1]:
+            caminho += '.csv'
         base, _ext = os.path.splitext(caminho)
         caminho_eq = base + '_equilibrios.csv'
+
+        if not self.app.pede_controle('Aula 3 - escada de degraus'):
+            return
 
         self._esc_gravador = GravadorEnsaio(
             caminho, T, pump2_pct_fn=lambda: self._esc_estado['seq'][self._esc_estado['idx']],
