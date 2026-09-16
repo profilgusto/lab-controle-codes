@@ -2202,14 +2202,6 @@ class AbaAula3(AbaBase):
         h = self.app.contas_para_altura_ativa(valores['LT'])
         estado['buffer'].append((trel, qin, h))
 
-        idx_atual = estado['idx']
-        u_corrente, sentido_corrente = estado['lista'][idx_atual]
-        self.lb_var.configure(
-            text=f'patamar {idx_atual + 1}/{len(estado["lista"])}: PUMP2 = '
-                 f'{u_corrente:.0f} % ({sentido_corrente}) | faltam '
-                 f'{self._mmss(estado["permanencia"] - (trel - estado["t_inicio_patamar"]))} | '
-                 f'qin = {qin:.2f} L/min | h = {h:.1f} mm')
-
         if trel - estado['t_inicio_patamar'] >= estado['permanencia']:
             qin_medio = self._janela_media([(tt, qq) for tt, qq, _h in estado['buffer']],
                                            trel, estado['media_s'])
@@ -2234,7 +2226,30 @@ class AbaAula3(AbaBase):
             estado['buffer'].clear()
             u_novo, _sentido_novo = estado['lista'][idx]
             self.app.aplica_comando(100.0, u_novo)
-            # o rotulo em si e reescrito na proxima amostra, com o tempo restante
+
+        self._mostra_progresso_var(trel, qin, h)
+
+    def _mostra_progresso_var(self, trel, qin, h):
+        """Escreve o progresso da varredura no rotulo da aba e na barra de status.
+
+        Os dois textos saem do mesmo ponto, DEPOIS da eventual troca de
+        patamar, para que nenhum deles passe meio segundo anunciando o
+        patamar anterior - `aplica_comando`, na troca, repoe o texto generico
+        de controle automatico na barra, e e esta chamada que o substitui.
+        """
+        estado = self._var_estado
+        idx = estado['idx']
+        u_atual, sentido = estado['lista'][idx]
+        decorrido = trel - estado['t_inicio_patamar']
+        passo = f'patamar {idx + 1}/{len(estado["lista"])}'
+        self.lb_var.configure(
+            text=f'{passo}: PUMP2 = {u_atual:.0f} % ({sentido}) | faltam '
+                 f'{self._mmss(estado["permanencia"] - decorrido)} | '
+                 f'qin = {qin:.2f} L/min | h = {h:.1f} mm')
+        self.app.status_ensaio(
+            f'{passo} - PUMP2 {u_atual:.0f} % ({sentido})   |   decorrido '
+            f'{decorrido:.0f} s de {estado["permanencia"]:.0f} s neste patamar   |   '
+            f'qin {qin:5.2f} L/min   |   h {h:6.1f} mm')
 
     # -- escada de degraus -------------------------------------------------
 
@@ -2632,6 +2647,25 @@ class Janela(tk.Tk):
     def libera_controle(self):
         self.controle_owner = None
         self._atualiza_controles()
+
+    def status_ensaio(self, texto):
+        """Progresso de um ensaio em curso na barra de status do rodape.
+
+        Enquanto um ensaio detem o controle, a barra fica parada em
+        "controle automatico: <nome>" (`_atualiza_controles`), porque a
+        atualizacao por amostra do rodape so roda com `controle_owner` nulo.
+        Num ensaio longo - a varredura da Aula 3 tem 21 patamares - isso
+        deixa a barra sem informacao nenhuma justamente quando ela e mais
+        util. Um ensaio chama este metodo a cada amostra para dizer, ali
+        mesmo, em que passo esta.
+
+        Ignora chamadas de quem nao detem o controle (um ensaio que acabou de
+        ser encerrado, por exemplo): a barra volta sozinha as leituras na
+        proxima amostra.
+        """
+        if self.controle_owner is None:
+            return
+        self.lb_status.configure(text=f'{self.controle_owner}: {texto}', foreground='#a11')
 
     def _valve_totalmente_aberta(self):
         return self.valve_pct >= 100.0 - 1e-6
