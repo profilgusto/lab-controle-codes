@@ -127,6 +127,50 @@ SERIES_GRAFICO = (
 ROTULO_ALTURA = 'h (nivel, mm)'
 COR_ALTURA = '#7b2d8e'
 
+# Topo FIXO do eixo de h, em mm. A escala nao acompanha mais os pontos
+# visiveis: com escala movel, a mesma curva mudava de inclinacao conforme a
+# janela de tempo escolhida ou o trecho em tela, e duas telas (ou dois PDF
+# exportados) do mesmo ensaio nao eram comparaveis a olho - um degrau de
+# 3 mm num patamar acomodado parecia tao dramatico quanto a subida inteira do
+# tanque. 250 mm cobre o tanque do CE117 com folga sobre a faixa util de LT
+# (~40 a 180 mm nos ensaios do curso).
+ALTURA_MAX_MM = 250.0
+ALTURA_PASSO_MM = 50.0   # espacamento dos rotulos do eixo de h
+
+# Nome sugerido para o CSV consolidado da varredura estatica (Aula 3): uma
+# linha por patamar, que e o arquivo de onde sai toda a analise da curva do
+# atuador. O aluno escolhe pasta e nome num dialogo antes de o ensaio comecar.
+ARQUIVO_VARREDURA = 'curva-atuador_dados-consolidados.csv'
+
+
+def faixa_ajustada(valores, span_minimo, reserva):
+    """(lo, hi) que enquadra `valores` com folga de 5 % de cada lado.
+
+    `span_minimo` evita o caso degenerado de uma serie parada (todos os
+    valores iguais), que daria lo == hi e divisao por zero na conversao para
+    pixels; `reserva` e o que devolver quando nao ha ponto nenhum em tela.
+    """
+    if not valores:
+        return reserva
+    lo, hi = min(valores), max(valores)
+    margem = max((hi - lo) * 0.05, span_minimo / 2.0)
+    return lo - margem, hi + margem
+
+
+def faixa_altura(v_lo, v_hi):
+    """(lo, hi) do eixo de h [mm] para um eixo esquerdo que vai de `v_lo` a
+    `v_hi` (em % do fundo de escala).
+
+    O topo e sempre `ALTURA_MAX_MM`. O fundo nao e livre: o "0" de h tem de
+    cair na MESMA linha horizontal que o "0 %" do eixo da esquerda, senao as
+    duas escalas deixam de comparar a partir da mesma base. Como o eixo
+    esquerdo reserva a faixa `v_lo`..0 abaixo do seu zero, o de h reserva a
+    mesma fracao da altura do grafico abaixo do dele - dai o fundo sair
+    ligeiramente negativo, e nao em 0.
+    """
+    frac0 = -v_lo / (v_hi - v_lo)
+    return -ALTURA_MAX_MM * frac0 / (1.0 - frac0), ALTURA_MAX_MM
+
 
 def _avalia_polinomio(coefs, x):
     """Avalia um polinomio em `x`, com `coefs` do maior grau ao menor
@@ -408,6 +452,29 @@ class Grafico(tk.Canvas):
         # interpolacao linear entre leituras que nao existe).
         self.modo = 'dispersao'
 
+        # Modo de escala dos dois eixos verticais. False (padrao) = faixas
+        # FIXAS, -5 a 105 % a esquerda e 0 a ALTURA_MAX_MM a direita: a mesma
+        # curva tem sempre a mesma inclinacao, e duas telas do mesmo ensaio
+        # sao comparaveis a olho. True = cada eixo se ajusta ao minimo e ao
+        # maximo do que esta EM TELA (a janela de tempo corrente, e so as
+        # series marcadas em "mostrar"), para enxergar detalhe dentro de um
+        # patamar acomodado. No modo adaptativo os dois zeros deixam de estar
+        # alinhados - ver `faixa_altura`.
+        self.escala_adaptativa = False
+
+        # Deslocamento horizontal ("scroll") dentro do historico em memoria.
+        # None = modo AO VIVO: a janela acompanha a amostra mais recente, como
+        # sempre foi. Um valor = instante absoluto da borda DIREITA da janela,
+        # fixado pelo usuario na barra de rolagem; a vista fica ancorada ali e
+        # nao anda mais com as amostras que chegam, o que permite escolher com
+        # calma uma regiao de interesse (e exporta-la) enquanto o ensaio segue.
+        # E um instante absoluto, e nao uma distancia ate o "agora", justamente
+        # para nao escorregar a cada amostra nova.
+        self.ancora_t = None
+        # Avisado a cada `redesenha` com (inicio, fim) em fracao do historico,
+        # no formato que `ttk.Scrollbar.set` espera.
+        self.on_rolagem = None
+
         # Pausa: "congela" a visualizacao guardando uma copia das series no
         # instante da pausa; `acrescenta()` continua alimentando `self.series`
         # normalmente (a aquisicao nao para), so o desenho passa a ler da
@@ -448,8 +515,93 @@ class Grafico(tk.Canvas):
         self.modo = 'dispersao' if self.modo == 'linha' else 'linha'
         self.redesenha()
 
+    def alterna_escala(self):
+        self.escala_adaptativa = not self.escala_adaptativa
+        self.redesenha()
+
     def define_visivel_altura(self, visivel):
         self.altura_visivel = visivel
+        self.redesenha()
+
+    def extensao(self):
+        """(t_ini, t_fim) de TODO o historico em memoria, ou None se vazio."""
+        fontes = [f for f in (self._fonte(c) for c, _r, _co in SERIES_GRAFICO) if f]
+        if not fontes:
+            return None
+        return min(f[0][0] for f in fontes), max(f[-1][0] for f in fontes)
+
+    def janela_visivel(self):
+        """(t_ini, t_fim) da faixa de tempo efetivamente desenhada agora.
+
+        Respeita a ancora de rolagem, mas sempre dentro do que existe em
+        memoria: se o historico ja e menor que a janela escolhida, ou se as
+        amostras ancoradas ja foram descartadas por idade, a vista volta
+        sozinha para o trecho mais recente disponivel.
+        """
+        ext = self.extensao()
+        if ext is None:
+            return 0.0, self.janela_s
+        t0, t1 = ext
+        if self.ancora_t is None:
+            t_fim = t1
+        else:
+            t_fim = min(t1, max(t0 + self.janela_s, self.ancora_t))
+        return t_fim - self.janela_s, t_fim
+
+    def fracoes_rolagem(self):
+        """(inicio, fim) da janela visivel como fracao do historico, para a
+        barra de rolagem. Historico menor que a janela: barra cheia."""
+        ext = self.extensao()
+        if ext is None:
+            return 0.0, 1.0
+        t0, t1 = ext
+        span = t1 - t0
+        if span <= self.janela_s:
+            return 0.0, 1.0
+        t_ini, t_fim = self.janela_visivel()
+        return max(0.0, (t_ini - t0) / span), min(1.0, (t_fim - t0) / span)
+
+    def rola_para(self, fracao_inicio):
+        """Coloca a borda ESQUERDA da janela na fracao dada do historico.
+
+        Encostar na direita solta a ancora e devolve o grafico ao modo ao
+        vivo - sem isso nao haveria como voltar a acompanhar o ensaio depois
+        de ter rolado para tras.
+        """
+        ext = self.extensao()
+        if ext is None:
+            return
+        t0, t1 = ext
+        span = t1 - t0
+        if span <= self.janela_s:
+            self.ancora_t = None
+        else:
+            t_fim = t0 + max(0.0, min(1.0, fracao_inicio)) * span + self.janela_s
+            self.ancora_t = None if t_fim >= t1 - 1e-6 else max(t0 + self.janela_s, t_fim)
+        self.redesenha()
+
+    def rola_passos(self, passos, fracao_do_passo):
+        """Desloca a janela em `passos` * `fracao_do_passo` da largura dela
+        (usado pelas setas e pelo clique no vao da barra de rolagem)."""
+        ext = self.extensao()
+        if ext is None:
+            return
+        t0, t1 = ext
+        span = t1 - t0
+        if span <= self.janela_s:
+            return
+        _t_ini, t_fim = self.janela_visivel()
+        self.rola_para((t_fim + passos * fracao_do_passo * self.janela_s
+                        - self.janela_s - t0) / span)
+
+    def ao_vivo(self):
+        ext = self.extensao()
+        if ext is None or self.ancora_t is None:
+            return True
+        return self.janela_visivel()[1] >= ext[1] - 1e-6
+
+    def volta_ao_vivo(self):
+        self.ancora_t = None
         self.redesenha()
 
     def _descarta_velhos(self):
@@ -484,6 +636,7 @@ class Grafico(tk.Canvas):
             self._series_pausadas = {chave: [] for chave in self.series}
         if self._altura_pausada is not None:
             self._altura_pausada = []
+        self.ancora_t = None
         self.redesenha()
 
     # -- pausa da visualizacao ------------------------------------------
@@ -505,11 +658,8 @@ class Grafico(tk.Canvas):
         return self.series[chave]
 
     def _visiveis(self, chave):
-        pontos = self._fonte(chave)
-        if not pontos:
-            return []
-        t_fim = pontos[-1][0]
-        return [(t, v) for t, v in pontos if t >= t_fim - self.janela_s]
+        t_ini, t_fim = self.janela_visivel()
+        return [(t, v) for t, v in self._fonte(chave) if t_ini <= t <= t_fim]
 
     def _fonte_altura(self):
         if self.pausado and self._altura_pausada is not None:
@@ -517,11 +667,8 @@ class Grafico(tk.Canvas):
         return self.serie_altura
 
     def _visiveis_altura(self):
-        pontos = self._fonte_altura()
-        if not pontos:
-            return []
-        t_fim = pontos[-1][0]
-        return [(t, v) for t, v in pontos if t >= t_fim - self.janela_s]
+        t_ini, t_fim = self.janela_visivel()
+        return [(t, v) for t, v in self._fonte_altura() if t_ini <= t <= t_fim]
 
     # -- selecao de janela de tempo (para exportar dados) -----------------
 
@@ -597,12 +744,24 @@ class Grafico(tk.Canvas):
         if x1 - x0 < 40 or y1 - y0 < 40:
             return
 
+        if self.on_rolagem is not None:
+            self.on_rolagem(*self.fracoes_rolagem())
+
         todos_pontos = {chave: self._visiveis(chave) for chave, _r, _c in SERIES_GRAFICO}
-        t_fim = max((p[-1][0] for p in todos_pontos.values() if p), default=self.janela_s)
-        t_ini = max(0.0, t_fim - self.janela_s)
+        t_ini, t_fim = self.janela_visivel()
+        t_ini = max(0.0, t_ini)
         if t_fim - t_ini < 1.0:
             t_fim = t_ini + 1.0
-        v_lo, v_hi = -5.0, 105.0
+        if self.escala_adaptativa:
+            # so as series marcadas em "mostrar" entram na conta: uma serie
+            # escondida nao esta "em exibicao" e nao deve esticar o eixo
+            valores_pct = [v for chave, _r, _c in SERIES_GRAFICO
+                           if self.visiveis.get(chave, True)
+                           for _t, v in todos_pontos[chave]]
+            v_lo, v_hi = faixa_ajustada(valores_pct, span_minimo=1.0,
+                                        reserva=(-5.0, 105.0))
+        else:
+            v_lo, v_hi = -5.0, 105.0
 
         def px(t):
             return x0 + (t - t_ini) / (t_fim - t_ini) * (x1 - x0)
@@ -610,10 +769,14 @@ class Grafico(tk.Canvas):
         def py(v):
             return y1 - (v - v_lo) / (v_hi - v_lo) * (y1 - y0)
 
-        for pct in (0, 20, 40, 60, 80, 100):
+        if self.escala_adaptativa:
+            marcas_pct = [(v_lo + (v_hi - v_lo) * i / 4, '.1f') for i in range(5)]
+        else:
+            marcas_pct = [(pct, '.0f') for pct in (0, 20, 40, 60, 80, 100)]
+        for pct, formato in marcas_pct:
             y = py(pct)
             self.create_line(x0, y, x1, y, fill='#e8e8e8')
-            self.create_text(x0 - 6, y, text=f'{pct}%', anchor='e',
+            self.create_text(x0 - 6, y, text=f'{pct:{formato}}%', anchor='e',
                              font=('TkDefaultFont', 8), fill='#555')
         for i in range(5):
             t = t_ini + (t_fim - t_ini) * i / 4
@@ -669,40 +832,36 @@ class Grafico(tk.Canvas):
                              font=self._fonte_legenda, fill='#333')
             legenda_x += 14 + self._fonte_legenda.measure(rotulo) + 20
 
-        # Curva de altura (h, mm): eixo vertical proprio, a direita, com
-        # escala auto-ajustada aos pontos visiveis (nao 0-100 %, como as
-        # demais series). So aparece apos uma calibracao de LT ser definida.
+        # Curva de altura (h, mm): eixo vertical proprio, a direita, em faixa
+        # FIXA de 0 a ALTURA_MAX_MM (nao 0-100 %, como as demais series, nem
+        # auto-ajustada aos pontos visiveis - ver `faixa_altura`).
         if self.altura_disponivel and self.altura_visivel:
             pontos_alt = self._visiveis_altura()
-            if pontos_alt:
-                valores_alt = [v for _t, v in pontos_alt]
-                alt_min, alt_max = min(valores_alt), max(valores_alt)
+            if self.escala_adaptativa:
+                alt_lo, alt_hi = faixa_ajustada(
+                    [v for _t, v in pontos_alt], span_minimo=5.0,
+                    reserva=faixa_altura(-5.0, 105.0))
             else:
-                alt_min, alt_max = 0.0, 250.0
-            margem_alt = max(5.0, (alt_max - alt_min) * 0.1)
-            hi_alvo = alt_max + margem_alt
-            lo_alvo = alt_min - margem_alt
-
-            # O "0" deste eixo (h) e o "0 %" do eixo a esquerda (v_lo=-5,
-            # v_hi=105) tem de cair na mesma linha horizontal, para que as
-            # duas escalas comparem visualmente a partir da mesma base. Isso
-            # significa reservar, abaixo do 0 de h, a MESMA fracao da altura
-            # do grafico que o eixo esquerdo reserva abaixo do seu 0 (a
-            # faixa de -5 a 0, dentro de -5..105) - dai alt_lo nao ser
-            # livre: e sempre -frac0 * (alt_hi - alt_lo).
-            frac0 = -v_lo / (v_hi - v_lo)
-            escala = max(hi_alvo, 1.0) / (1.0 - frac0)
-            if lo_alvo < 0.0:
-                escala = max(escala, -lo_alvo / frac0)
-            alt_hi = escala * (1.0 - frac0)
-            alt_lo = -escala * frac0
+                alt_lo, alt_hi = faixa_altura(v_lo, v_hi)
 
             def py_alt(v):
+                # o clamp mantem dentro da moldura uma leitura fora da faixa
+                # (calibracao trocada, LT saturado), em vez de riscar por cima
+                # da legenda e do eixo do tempo
+                v = max(alt_lo, min(alt_hi, v))
                 return y1 - (v - alt_lo) / (alt_hi - alt_lo) * (y1 - y0)
 
-            for frac in (0.0, 0.25, 0.5, 0.75, 1.0):
-                v = frac * alt_hi
-                self.create_text(x1 + 6, py_alt(v), text=f'{v:.0f}', anchor='w',
+            if self.escala_adaptativa:
+                marcas_alt = [(alt_lo + (alt_hi - alt_lo) * i / 4, '.1f') for i in range(5)]
+            else:
+                # com o topo fixo, os rotulos podem ser redondos (0, 50, ... 250)
+                # em vez das fracoes do maximo em tela (0, 62, 125, 188, 250)
+                marcas_alt, v = [], 0.0
+                while v <= alt_hi + 1e-9:
+                    marcas_alt.append((v, '.0f'))
+                    v += ALTURA_PASSO_MM
+            for v, formato in marcas_alt:
+                self.create_text(x1 + 6, py_alt(v), text=f'{v:{formato}}', anchor='w',
                                  font=('TkDefaultFont', 8), fill=COR_ALTURA)
             self.create_text(x1 + 6, y0 - 10, text='h [mm]', anchor='w',
                              font=('TkDefaultFont', 8, 'italic'), fill=COR_ALTURA)
@@ -1995,7 +2154,7 @@ class AbaAula3(AbaBase):
         campos_var = (
             ('comando inicial (%)', 'var_var_ini', '0'),
             ('comando final (%)', 'var_var_fim', '100'),
-            ('passo (%)', 'var_var_passo', '10'),
+            ('passo (%)', 'var_var_passo', '5'),
             ('permanencia por patamar (s)', 'var_var_perm', '15'),
             ('media dos ultimos (s)', 'var_var_media', '5'),
         )
@@ -2007,7 +2166,10 @@ class AbaAula3(AbaBase):
                 row=1 + i // 3, column=2 * (i % 3) + 1, sticky='w', padx=(4, 20))
 
         ttk.Label(var, text='arquivo:').grid(row=3, column=0, sticky='w')
-        self.var_var_arquivo = tk.StringVar(value='curva_atuador.csv')
+        # Sugestao levada ao dialogo de "salvar como" aberto por
+        # `_inicia_var`; depois da escolha, passa a mostrar o caminho
+        # efetivamente usado, para que o aluno saiba onde o ensaio foi parar.
+        self.var_var_arquivo = tk.StringVar(value=ARQUIVO_VARREDURA)
         ttk.Entry(var, textvariable=self.var_var_arquivo, width=24).grid(
             row=3, column=1, columnspan=3, sticky='w', padx=(4, 0))
 
@@ -2041,7 +2203,7 @@ class AbaAula3(AbaBase):
             esc, text='Aplica uma sequencia de comandos de PUMP2, cada um mantido pela mesma\n'
                       'duracao, gravando um CSV continuo (t_s, lt_contas, h_mm, ft2_contas,\n'
                       'qin_lpm, pump2_pct) e, num segundo arquivo, o instante de inicio, o h de\n'
-                      'equilibrio e o qin de equilibrio de cada patamar (Tab. 3.2 e Tab. 3.3).\n'
+                      'equilibrio e o qin de equilibrio de cada patamar (Tab. 3.1 e Tab. 3.2).\n'
                       'Cada patamar traz ainda a DERIVA de h nos seus ultimos 30 s: e o\n'
                       'criterio quantitativo de acomodacao do roteiro - poucos mm significam\n'
                       'patamar acomodado; a linha fica em vermelho se passar de 3 mm.\n'
@@ -2163,11 +2325,35 @@ class AbaAula3(AbaBase):
 
         if not self.app.confirma_calibracao_lt('varredura estatica'):
             return
+
+        # Onde salvar e escolhido ANTES de tomar o controle da planta: assim
+        # cancelar o dialogo nao deixa a bomba reservada por um ensaio que nao
+        # vai acontecer. O dialogo tambem ja cuida da confirmacao de
+        # sobrescrita, entao nao ha o que checar aqui.
+        sugestao = self.var_var_arquivo.get().strip() or ARQUIVO_VARREDURA
+        caminho = filedialog.asksaveasfilename(
+            title='Salvar dados consolidados da varredura estatica',
+            defaultextension='.csv', initialfile=os.path.basename(sugestao),
+            initialdir=os.path.dirname(os.path.abspath(sugestao)),
+            filetypes=[('CSV', '*.csv'), ('todos os arquivos', '*.*')])
+        if not caminho:
+            return
+        # Alguns Tk/macOS nao aplicam `defaultextension` de forma confiavel -
+        # mesmo cuidado do botao de exportar grafico da Aula 1.
+        if not os.path.splitext(caminho)[1]:
+            caminho += '.csv'
+        self.var_var_arquivo.set(caminho)
+
         if not self.app.pede_controle('Aula 3 - varredura estatica'):
             return
 
-        caminho = self.var_var_arquivo.get().strip() or 'curva_atuador.csv'
-        self._var_arquivo = open(caminho, 'w', newline='')
+        try:
+            self._var_arquivo = open(caminho, 'w', newline='')
+        except OSError as erro:
+            self.app.libera_controle()
+            messagebox.showerror('Nao foi possivel gravar',
+                                 f'{caminho}\n\n{erro}')
+            return
         self._var_escritor = csv.writer(self._var_arquivo)
         self._var_escritor.writerow(['u_pct', 'sentido', 'qin_lpm', 'h_mm'])
         for item in self.tabela_var.get_children():
@@ -2545,6 +2731,9 @@ class Janela(tk.Tk):
         self.bt_modo_grafico = ttk.Button(
             janela, text='ver como linha', command=self._alterna_modo_grafico)
         self.bt_modo_grafico.pack(side='left', padx=(10, 6))
+        self.bt_escala_grafico = ttk.Button(
+            janela, text='escala adaptativa', command=self._alterna_escala_grafico)
+        self.bt_escala_grafico.pack(side='left', padx=(0, 6))
 
         ttk.Button(janela, text='limpar grafico', command=lambda: self.gr.limpa()).pack(side='left')
 
@@ -2590,6 +2779,20 @@ class Janela(tk.Tk):
         # grafico em relacao as abas logo abaixo.
         self.gr = Grafico(quadro_grafico, janela_s=self.janela_s, height=320)
         self.gr.pack(fill='both', expand=True, pady=(6, 0))
+
+        # Rolagem horizontal pelo historico em memoria (ate JANELA_MAX_S). O
+        # arrasto com o botao esquerdo sobre o grafico ja e a selecao de
+        # exportacao, por isso o deslocamento fica numa barra propria em vez
+        # de ser feito arrastando a tela.
+        rolagem = ttk.Frame(quadro_grafico)
+        rolagem.pack(fill='x', pady=(2, 0))
+        self.barra_tempo = ttk.Scrollbar(
+            rolagem, orient='horizontal', command=self._rola_grafico)
+        self.barra_tempo.pack(side='left', fill='x', expand=True)
+        self.bt_ao_vivo = ttk.Button(
+            rolagem, text='ao vivo', width=9, command=self._volta_ao_vivo)
+        self.bt_ao_vivo.pack(side='left', padx=(6, 0))
+        self.gr.on_rolagem = self._atualiza_barra_tempo
         painel_topo.add(quadro_grafico, weight=3)
 
         painel.add(painel_topo, weight=3)
@@ -2849,6 +3052,36 @@ class Janela(tk.Tk):
         else:
             self.bt_modo_grafico.configure(text='ver como dispersao')
 
+    def _rola_grafico(self, *args):
+        """Comando da barra de rolagem horizontal do grafico.
+
+        Recebe os tres formatos que `ttk.Scrollbar` emite: arrasto da alca
+        ('moveto', fracao), setas das pontas ('scroll', n, 'units') e clique
+        no vao ('scroll', n, 'pages').
+        """
+        if args[0] == 'moveto':
+            self.gr.rola_para(float(args[1]))
+        elif args[0] == 'scroll':
+            passo = 0.1 if args[2] == 'units' else 0.9
+            self.gr.rola_passos(int(args[1]), passo)
+
+    def _atualiza_barra_tempo(self, inicio, fim):
+        """Chamado pelo grafico a cada redesenho, com a fatia visivel do
+        historico. Tambem e aqui que o botao "ao vivo" acende ou apaga."""
+        self.barra_tempo.set(inicio, fim)
+        self.bt_ao_vivo.state(['disabled'] if self.gr.ao_vivo() else ['!disabled'])
+
+    def _volta_ao_vivo(self):
+        self.gr.volta_ao_vivo()
+
+    def _alterna_escala_grafico(self):
+        """Chaveia entre as faixas fixas (0-100 % e 0-250 mm) e faixas ajustadas
+        ao minimo e ao maximo do que esta em tela. O rotulo do botao nomeia
+        sempre o modo de DESTINO, como o de "ver como linha"."""
+        self.gr.alterna_escala()
+        self.bt_escala_grafico.configure(
+            text='escala fixa' if self.gr.escala_adaptativa else 'escala adaptativa')
+
     def _alterna_exportacao(self):
         if self.gr.selecionando:
             self.gr.desativa_selecao()
@@ -2952,7 +3185,10 @@ class Janela(tk.Tk):
             n_visiveis += 1
         eixo.set_xlabel('t [s]')
         eixo.set_ylabel('% do fundo de escala do instrumento')
-        eixo.set_ylim(-5, 105)
+        # o PDF sai no mesmo modo de escala do grafico ao vivo; no adaptativo,
+        # quem enquadra e o proprio matplotlib, sobre os dados do recorte
+        if not self.gr.escala_adaptativa:
+            eixo.set_ylim(-5, 105)
         eixo.grid(True, color='#e8e8e8')
         eixo.set_title('Planta TQ CE117 - janela exportada do grafico')
 
@@ -2975,6 +3211,11 @@ class Janela(tk.Tk):
             else:
                 eixo_alt.plot(ts, h_mm, color=COR_ALTURA, label=ROTULO_ALTURA, linewidth=1.5)
             eixo_alt.set_ylabel('h [mm]', color=COR_ALTURA)
+            # mesma faixa fixa do grafico ao vivo: o PDF exportado e a figura
+            # que vai para o relatorio, e ele tem de sair na escala em que o
+            # aluno viu o ensaio acontecer.
+            if not self.gr.escala_adaptativa:
+                eixo_alt.set_ylim(*faixa_altura(-5.0, 105.0))
             eixo_alt.tick_params(axis='y', labelcolor=COR_ALTURA)
             alt_leg, alt_rot = eixo_alt.get_legend_handles_labels()
             linhas_legenda += alt_leg
