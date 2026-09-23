@@ -159,7 +159,10 @@ COR_ALTURA = '#7b2d8e'
 # deque `Grafico.serie_referencia`, vazia ate a Aula 4 gravar o primeiro
 # ponto.
 ROTULO_REFERENCIA = 'r (referencia, mm)'
-COR_REFERENCIA = '#666666'
+# Cor de destaque (laranja) e traco grosso: a linha e desenhada por cima das
+# bolinhas roxas de h e precisa continuar visivel quando elas a cobrem.
+COR_REFERENCIA = '#e67e00'
+LARGURA_REFERENCIA = 3
 
 # Topo FIXO do eixo de h, em mm. A escala nao acompanha mais os pontos
 # visiveis: com escala movel, a mesma curva mudava de inclinacao conforme a
@@ -982,8 +985,14 @@ class Grafico(tk.Canvas):
         if mostra_h or pontos_erro:
             pontos_alt = self._visiveis_altura() if mostra_h else []
             if self.escala_adaptativa:
+                # com um controlador ativo, a referencia tambem entra na conta:
+                # sem isso, ela sairia da faixa ajustada aos pontos de h e
+                # ficaria colada na borda pelo clamp de `py_alt`
+                pontos_ref_esc = (self._visiveis_referencia()
+                                  if self.ctrl_ativo and self.serie_referencia else [])
                 alt_lo, alt_hi = faixa_ajustada(
-                    [v for _t, v in pontos_alt + pontos_erro], span_minimo=5.0,
+                    [v for _t, v in pontos_alt + pontos_erro + pontos_ref_esc],
+                    span_minimo=5.0,
                     reserva=faixa_altura(-5.0, 105.0))
             else:
                 alt_lo, alt_hi = faixa_altura(v_lo, v_hi)
@@ -1087,11 +1096,12 @@ class Grafico(tk.Canvas):
                         t_atu, v_atu = pontos_ref[i]
                         x_atu = px(t_atu)
                         traco += [x_atu, py_alt(v_ant), x_atu, py_alt(v_atu)]
-                    self.create_line(*traco, fill=COR_REFERENCIA, width=1.5, dash=(6, 3))
+                    self.create_line(*traco, fill=COR_REFERENCIA, width=LARGURA_REFERENCIA,
+                                     dash=(8, 4))
                 elif pontos_ref:
                     x, y = px(pontos_ref[0][0]), py_alt(pontos_ref[0][1])
-                    self.create_line(x - 5, y, x + 5, y, fill=COR_REFERENCIA, width=1.5,
-                                     dash=(6, 3))
+                    self.create_line(x - 5, y, x + 5, y, fill=COR_REFERENCIA, width=LARGURA_REFERENCIA,
+                                     dash=(8, 4))
                 self.create_rectangle(legenda_x, 8, legenda_x + 10, 18, fill=COR_REFERENCIA,
                                       outline='')
                 self.create_text(legenda_x + 14, 13, text=ROTULO_REFERENCIA, anchor='w',
@@ -2956,11 +2966,11 @@ class AbaAula4(AbaBase):
         self._monta()
 
     def _monta(self):
-        bloco = ttk.LabelFrame(self, text='Malha fechada (Secao pi-hub)', padding=10)
+        bloco = ttk.LabelFrame(self, text='Malha fechada', padding=10)
         bloco.pack(fill='both', expand=True)
 
         ttk.Label(
-            bloco, text='Fecha a malha de nivel com o PI discreto do Cod. pi-discreto: mesma\n'
+            bloco, text='Fecha a malha de nivel com o PI discreto do roteiro: mesma\n'
                         'saturacao, mesmo anti-windup por integracao condicional (opcional) e\n'
                         'mesma partida sem solavanco do roteiro. Exige VALVE em pelo menos 30 %\n'
                         '(slider/botao do topo da janela). Por seguranca, a malha abre e\n'
