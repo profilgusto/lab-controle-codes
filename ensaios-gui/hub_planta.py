@@ -127,6 +127,14 @@ SERIES_GRAFICO = (
 ROTULO_ALTURA = 'h (nivel, mm)'
 COR_ALTURA = '#7b2d8e'
 
+# Curva de referencia (r, mm) da malha fechada da Aula 4: compartilha o
+# mesmo eixo secundario (mm) da curva de altura acima, e so aparece enquanto
+# ela tambem aparecer - por isso nao tem flag propria de "disponivel", so a
+# deque `Grafico.serie_referencia`, vazia ate a Aula 4 gravar o primeiro
+# ponto.
+ROTULO_REFERENCIA = 'r (referencia, mm)'
+COR_REFERENCIA = '#666666'
+
 # Topo FIXO do eixo de h, em mm. A escala nao acompanha mais os pontos
 # visiveis: com escala movel, a mesma curva mudava de inclinacao conforme a
 # janela de tempo escolhida ou o trecho em tela, e duas telas (ou dois PDF
@@ -147,6 +155,17 @@ ARQUIVO_VARREDURA = 'curva-atuador_dados-consolidados.csv'
 # arquivo de equilibrios (Tab. 3.2) e derivado deste, com o sufixo
 # `_equilibrios`.
 ARQUIVO_ESCADA = 'escada_degraus.csv'
+
+# Nome sugerido para o CSV continuo da malha fechada (Aula 4). O arquivo de
+# patamares (Tab. da aba, colunas de h_ext/h_final/t_sat) e derivado deste,
+# com o sufixo `_patamares`, como o `_equilibrios` da Aula 3.
+ARQUIVO_MALHA = 'malha_pi.csv'
+
+# Faixa de referencia aceita pela aba da Aula 4 (Secao pi-hub) e o limite de
+# seguranca que abre a malha e desliga PUMP2 - mesmos valores do roteiro.
+MALHA_REF_MIN_MM = 40.0
+MALHA_REF_MAX_MM = 150.0
+MALHA_H_DESARME_MM = 160.0
 
 
 def faixa_ajustada(valores, span_minimo, reserva):
@@ -449,6 +468,14 @@ class Grafico(tk.Canvas):
         self.altura_disponivel = True
         self.altura_visivel = True
 
+        # Curva de referencia (r, mm) da malha fechada da Aula 4 - ver
+        # comentario de ROTULO_REFERENCIA/COR_REFERENCIA. Ao contrario da
+        # curva de altura, comeca vazia e so ganha pontos enquanto a aba
+        # Aula 4 tem uma malha em curso; fica visivel depois de terminado o
+        # ensaio, como as demais curvas, ate o grafico ser limpo ou uma nova
+        # malha comecar (`limpa_referencia`, chamado por `AbaAula4`).
+        self.serie_referencia = deque()
+
         # Modo de visualizacao: 'linha' interpola os pontos amostrados com
         # uma reta cheia (comportamento historico); 'dispersao' marca cada
         # leitura com um ponto grande e visivel, ligado por uma linha fina e
@@ -488,6 +515,7 @@ class Grafico(tk.Canvas):
         self.pausado = False
         self._series_pausadas = None
         self._altura_pausada = None
+        self._referencia_pausada = None
 
         # Selecao de uma janela de tempo a arrasto do mouse (usada pelo
         # botao "exportar dados"); `_geom` guarda a ultima geometria de
@@ -623,6 +651,10 @@ class Grafico(tk.Canvas):
             t = self.serie_altura[-1][0]
             while self.serie_altura and t - self.serie_altura[0][0] > limite:
                 self.serie_altura.popleft()
+        if self.serie_referencia:
+            t = self.serie_referencia[-1][0]
+            while self.serie_referencia and t - self.serie_referencia[0][0] > limite:
+                self.serie_referencia.popleft()
 
     def acrescenta(self, t, valores_pct):
         for chave, pct in valores_pct.items():
@@ -634,14 +666,31 @@ class Grafico(tk.Canvas):
         self.serie_altura.append((t, h_mm))
         self._descarta_velhos()
 
+    def acrescenta_referencia(self, t, r_mm):
+        """Um ponto da referencia r[k] da malha fechada da Aula 4 (AbaAula4)."""
+        self.serie_referencia.append((t, r_mm))
+        self._descarta_velhos()
+
+    def limpa_referencia(self):
+        """So a curva de referencia, chamado por `AbaAula4` ao iniciar uma
+        nova malha - as demais curvas (h, PUMP2, ...) do ensaio anterior
+        continuam no grafico, como em qualquer outra aba."""
+        self.serie_referencia.clear()
+        if self._referencia_pausada is not None:
+            self._referencia_pausada = []
+        self.redesenha()
+
     def limpa(self):
         for pontos in self.series.values():
             pontos.clear()
         self.serie_altura.clear()
+        self.serie_referencia.clear()
         if self._series_pausadas is not None:
             self._series_pausadas = {chave: [] for chave in self.series}
         if self._altura_pausada is not None:
             self._altura_pausada = []
+        if self._referencia_pausada is not None:
+            self._referencia_pausada = []
         self.ancora_t = None
         self.redesenha()
 
@@ -651,11 +700,13 @@ class Grafico(tk.Canvas):
         self.pausado = True
         self._series_pausadas = {chave: list(pontos) for chave, pontos in self.series.items()}
         self._altura_pausada = list(self.serie_altura)
+        self._referencia_pausada = list(self.serie_referencia)
 
     def retoma(self):
         self.pausado = False
         self._series_pausadas = None
         self._altura_pausada = None
+        self._referencia_pausada = None
         self.redesenha()
 
     def _fonte(self, chave):
@@ -675,6 +726,15 @@ class Grafico(tk.Canvas):
     def _visiveis_altura(self):
         t_ini, t_fim = self.janela_visivel()
         return [(t, v) for t, v in self._fonte_altura() if t_ini <= t <= t_fim]
+
+    def _fonte_referencia(self):
+        if self.pausado and self._referencia_pausada is not None:
+            return self._referencia_pausada
+        return self.serie_referencia
+
+    def _visiveis_referencia(self):
+        t_ini, t_fim = self.janela_visivel()
+        return [(t, v) for t, v in self._fonte_referencia() if t_ini <= t <= t_fim]
 
     # -- selecao de janela de tempo (para exportar dados) -----------------
 
@@ -901,6 +961,32 @@ class Grafico(tk.Canvas):
             self.create_text(legenda_x + 14, 13, text=ROTULO_ALTURA, anchor='w',
                              font=self._fonte_legenda, fill='#333')
             legenda_x += 14 + self._fonte_legenda.measure(ROTULO_ALTURA) + 20
+
+            # Curva de referencia (r, mm) da malha fechada da Aula 4: mesmo
+            # eixo (py_alt) da curva de altura acima, sempre desenhada como
+            # degrau (a referencia e constante dentro de cada patamar) e
+            # independente do modo linha/dispersao escolhido para as demais
+            # series - interpolar retas entre dois patamares diferentes
+            # sugeriria uma rampa que a referencia nunca fez.
+            if self.serie_referencia:
+                pontos_ref = self._visiveis_referencia()
+                if len(pontos_ref) >= 2:
+                    traco = [px(pontos_ref[0][0]), py_alt(pontos_ref[0][1])]
+                    for i in range(1, len(pontos_ref)):
+                        _t_ant, v_ant = pontos_ref[i - 1]
+                        t_atu, v_atu = pontos_ref[i]
+                        x_atu = px(t_atu)
+                        traco += [x_atu, py_alt(v_ant), x_atu, py_alt(v_atu)]
+                    self.create_line(*traco, fill=COR_REFERENCIA, width=1.5, dash=(6, 3))
+                elif pontos_ref:
+                    x, y = px(pontos_ref[0][0]), py_alt(pontos_ref[0][1])
+                    self.create_line(x - 5, y, x + 5, y, fill=COR_REFERENCIA, width=1.5,
+                                     dash=(6, 3))
+                self.create_rectangle(legenda_x, 8, legenda_x + 10, 18, fill=COR_REFERENCIA,
+                                      outline='')
+                self.create_text(legenda_x + 14, 13, text=ROTULO_REFERENCIA, anchor='w',
+                                 font=self._fonte_legenda, fill='#333')
+                legenda_x += 14 + self._fonte_legenda.measure(ROTULO_REFERENCIA) + 20
 
         self._geom = (x0, y0, x1, y1, t_ini, t_fim)
 
@@ -2713,6 +2799,456 @@ class AbaAula3(AbaBase):
             self._atualiza_esc(t, valores)
 
 
+class PIDiscreto:
+    """PI em forma de posicao, com saturacao e anti-windup opcional.
+
+    E o MESMO codigo do cod:pi-discreto da Aula 4 (conteudo.tex, secao
+    pi-discreto): a aba roda exatamente esta classe, e nao uma reimplementacao
+    paralela, para que o item pi-analise-implementacao possa recalcular os
+    comandos do CSV gravado e bater ponto a ponto com o que a bancada fez.
+    """
+
+    def __init__(self, Kc, Ti, T, u_min=45.0, u_max=100.0, anti_windup=True):
+        self.Kc, self.Ti, self.T = Kc, Ti, T       # Ti = None: proporcional puro
+        self.u_min, self.u_max = u_min, u_max
+        self.anti_windup = anti_windup
+        self.I = 0.0                                 # termo integral, em %
+
+    def inicia(self, u_atual, e_atual):
+        """Partida sem solavanco; no P puro, chame inicia(u_b, 0.0)."""
+        self.I = u_atual - self.Kc * e_atual
+
+    def calcula(self, r, h):
+        e = r - h
+        v = self.Kc * e + self.I                     # comando pedido
+        u = min(max(v, self.u_min), self.u_max)      # comando aplicado
+        agrava = (v > self.u_max and e > 0) or (v < self.u_min and e < 0)
+        if self.Ti is not None and not (self.anti_windup and agrava):
+            self.I += self.Kc * self.T / self.Ti * e # Euler progressivo
+        return u, v
+
+
+class AbaAula4(AbaBase):
+    """Aula 4 - malha fechada com PI discreto, saturacao e anti-windup (Secao pi-hub)."""
+
+    # Janela de media para o h_final_mm do CSV de patamares - mesma ideia da
+    # "media dos ultimos 10 s" do roteiro (Secao pi-hub, Tab. de patamares).
+    MEDIA_H_FINAL_S = 10.0
+
+    def __init__(self, master, app):
+        super().__init__(master, app)
+        self._estado = None
+        self._pi = None
+        self._arquivo = None
+        self._escritor = None
+        self._arquivo_pat = None
+        self._escritor_pat = None
+        self._monta()
+
+    def _monta(self):
+        bloco = ttk.LabelFrame(self, text='Malha fechada (Secao pi-hub)', padding=10)
+        bloco.pack(fill='both', expand=True)
+
+        ttk.Label(
+            bloco, text='Fecha a malha de nivel com o PI discreto do Cod. pi-discreto: mesma\n'
+                        'saturacao, mesmo anti-windup por integracao condicional (opcional) e\n'
+                        'mesma partida sem solavanco do roteiro. Exige VALVE em 100 % (liberado\n'
+                        'pelo slider/botao do topo da janela). Por seguranca, a malha abre e\n'
+                        f'desliga PUMP2 se h passar de {MALHA_H_DESARME_MM:.0f} mm.',
+            justify='left').grid(row=0, column=0, columnspan=6, sticky='w', pady=(0, 10))
+
+        # -- controlador ----------------------------------------------------
+        quad_ctrl = ttk.LabelFrame(bloco, text='Controlador', padding=8)
+        quad_ctrl.grid(row=1, column=0, columnspan=6, sticky='we', pady=(0, 10))
+
+        self.var_ai = tk.BooleanVar(value=True)
+        ttk.Checkbutton(quad_ctrl, text='acao integral', variable=self.var_ai,
+                       command=self._atualiza_campos_ctrl).grid(
+            row=0, column=0, columnspan=2, sticky='w')
+
+        # Valores-exemplo do projeto da Secao pi-projeto (K = 3,2 mm/%,
+        # tau = 130 s, zeta = 0,8, ts = 150 s): ajudam o aluno a conferir que
+        # digitou os proprios ganhos no campo certo, mas cada grupo digita os
+        # ganhos do SEU projeto (Tab. pi-projeto), nao estes.
+        campos_ctrl = (
+            ('Kc [%/mm]', 'var_kc', '1.85'),
+            ('Ti [s]', 'var_ti', '41'),
+            ('u_b [%] (P puro)', 'var_ub', '50'),
+            ('T [s]', 'var_T', '2'),
+            ('u_min [%]', 'var_umin', '45'),
+            ('u_max [%]', 'var_umax', '100'),
+        )
+        self._entradas_ctrl = {}
+        for i, (rotulo, nome, padrao) in enumerate(campos_ctrl):
+            v = tk.StringVar(value=padrao)
+            setattr(self, nome, v)
+            ttk.Label(quad_ctrl, text=rotulo + ':').grid(
+                row=1 + i // 3, column=2 * (i % 3), sticky='w', pady=(4, 0))
+            entrada = ttk.Entry(quad_ctrl, textvariable=v, width=8)
+            entrada.grid(row=1 + i // 3, column=2 * (i % 3) + 1, sticky='w',
+                        padx=(4, 20), pady=(4, 0))
+            self._entradas_ctrl[nome] = entrada
+
+        ttk.Label(quad_ctrl, text='anti-windup:').grid(row=3, column=0, sticky='w', pady=(6, 0))
+        self.var_aw = tk.StringVar(value='integração condicional')
+        ttk.Combobox(quad_ctrl, textvariable=self.var_aw, state='readonly', width=22,
+                    values=('nenhum', 'integração condicional')).grid(
+            row=3, column=1, columnspan=2, sticky='w', padx=(4, 0), pady=(6, 0))
+
+        self._atualiza_campos_ctrl()
+
+        # -- referencia -------------------------------------------------
+        quad_ref = ttk.LabelFrame(bloco, text='Referencia', padding=8)
+        quad_ref.grid(row=2, column=0, columnspan=6, sticky='we', pady=(0, 10))
+        ttk.Label(quad_ref, text='sequencia de referencias (mm):').grid(row=0, column=0, sticky='w')
+        self.var_ref_seq = tk.StringVar(value='70,80,125,70')
+        ttk.Entry(quad_ref, textvariable=self.var_ref_seq, width=28).grid(
+            row=0, column=1, columnspan=3, sticky='w', padx=(4, 0))
+        ttk.Label(quad_ref, text='duracao por patamar (s):').grid(
+            row=1, column=0, sticky='w', pady=(6, 0))
+        self.var_ref_dur = tk.StringVar(value='300')
+        ttk.Entry(quad_ref, textvariable=self.var_ref_dur, width=8).grid(
+            row=1, column=1, sticky='w', padx=(4, 0), pady=(6, 0))
+        ttk.Label(
+            quad_ref, text=f'cada referencia tem de estar entre {MALHA_REF_MIN_MM:.0f} e '
+                          f'{MALHA_REF_MAX_MM:.0f} mm.',
+            foreground='#555', font=('TkDefaultFont', 8)).grid(
+            row=2, column=0, columnspan=4, sticky='w', pady=(4, 0))
+
+        # -- perturbacao ------------------------------------------------
+        quad_pert = ttk.LabelFrame(bloco, text='Perturbacao', padding=8)
+        quad_pert.grid(row=3, column=0, columnspan=6, sticky='we', pady=(0, 10))
+        campos_pert = (
+            ('amplitude d [%]', 'var_d_amp', '0'),
+            ('inicio [s]', 'var_d_ini', '0'),
+            ('fim [s]', 'var_d_fim', '0'),
+        )
+        for i, (rotulo, nome, padrao) in enumerate(campos_pert):
+            v = tk.StringVar(value=padrao)
+            setattr(self, nome, v)
+            ttk.Label(quad_pert, text=rotulo + ':').grid(row=0, column=2 * i, sticky='w')
+            ttk.Entry(quad_pert, textvariable=v, width=8).grid(
+                row=0, column=2 * i + 1, sticky='w', padx=(4, 20))
+        ttk.Label(
+            quad_pert, text='amplitude nula = sem perturbacao; instantes contados desde o '
+                            'inicio da malha.',
+            foreground='#555', font=('TkDefaultFont', 8)).grid(
+            row=1, column=0, columnspan=6, sticky='w', pady=(4, 0))
+
+        # -- iniciar/parar e tabela ao vivo ----------------------------------
+        self.bt_malha = ttk.Button(bloco, text='iniciar malha', command=self._alterna_malha)
+        self.bt_malha.grid(row=4, column=0, columnspan=2, sticky='w', pady=(4, 0))
+        self.lb_malha = ttk.Label(bloco, text='parado.')
+        self.lb_malha.grid(row=4, column=2, columnspan=4, sticky='w', pady=(4, 0))
+
+        quadro_tab = ttk.Frame(bloco)
+        quadro_tab.grid(row=5, column=0, columnspan=6, sticky='nsew', pady=(8, 0))
+        bloco.rowconfigure(5, weight=1)
+        bloco.columnconfigure(5, weight=1)
+        quadro_tab.rowconfigure(0, weight=1)
+        quadro_tab.columnconfigure(0, weight=1)
+        self.tabela = ttk.Treeview(
+            quadro_tab, columns=('patamar', 'r', 't0', 'hext', 'hfinal', 'tsat'),
+            show='headings', height=6)
+        for coluna, texto in (('patamar', 'patamar'), ('r', 'r [mm]'), ('t0', 't inicio [s]'),
+                              ('hext', 'h extremo [mm]'), ('hfinal', 'h final [mm]'),
+                              ('tsat', 't saturado [s]')):
+            self.tabela.heading(coluna, text=texto)
+        barra = ttk.Scrollbar(quadro_tab, orient='vertical', command=self.tabela.yview)
+        self.tabela.configure(yscrollcommand=barra.set)
+        self.tabela.grid(row=0, column=0, sticky='nsew')
+        barra.grid(row=0, column=1, sticky='ns')
+
+    def _atualiza_campos_ctrl(self):
+        """Habilita Ti (PI) ou u_b (P puro) conforme a caixa 'acao integral' -
+        a mesma dicotomia do Cod. pi-discreto (Ti=None vira proporcional
+        puro, com o comando de base fixo somado no lugar do integrador)."""
+        if self.var_ai.get():
+            self._entradas_ctrl['var_ti'].configure(state='normal')
+            self._entradas_ctrl['var_ub'].configure(state='disabled')
+        else:
+            self._entradas_ctrl['var_ti'].configure(state='disabled')
+            self._entradas_ctrl['var_ub'].configure(state='normal')
+
+    # -- helpers ---------------------------------------------------------
+
+    def _le_float(self, var, nome, minimo=None, maximo=None):
+        try:
+            valor = float(var.get().replace(',', '.'))
+        except ValueError:
+            raise ValueError(f'{nome} precisa ser um numero.')
+        if minimo is not None and valor < minimo:
+            raise ValueError(f'{nome} tem de ser >= {minimo}.')
+        if maximo is not None and valor > maximo:
+            raise ValueError(f'{nome} tem de ser <= {maximo}.')
+        return valor
+
+    @staticmethod
+    def _mmss(segundos):
+        segundos = max(0, int(round(segundos)))
+        return f'{segundos // 60:d}:{segundos % 60:02d}'
+
+    def _janela_media(self, amostras, trel, media_s):
+        vistos = [v for tt, v in amostras if trel - tt <= media_s]
+        return sum(vistos) / len(vistos) if vistos else float('nan')
+
+    # -- iniciar/parar a malha -------------------------------------------
+
+    def _alterna_malha(self):
+        if self._estado is None:
+            self._inicia_malha()
+        else:
+            self._encerra_malha('interrompida pelo usuario')
+
+    def _inicia_malha(self):
+        try:
+            Kc = self._le_float(self.var_kc, 'Kc')
+            T = self._le_float(self.var_T, 'T', 1e-6)
+            u_min = self._le_float(self.var_umin, 'u_min', 0, 100)
+            u_max = self._le_float(self.var_umax, 'u_max', 0, 100)
+            ai = self.var_ai.get()
+            if ai:
+                Ti = self._le_float(self.var_ti, 'Ti', 1e-6)
+                u_b = None
+            else:
+                Ti = None
+                u_b = self._le_float(self.var_ub, 'u_b', 0, 100)
+        except ValueError as erro:
+            messagebox.showerror('Parametro invalido', str(erro))
+            return
+        if u_max <= u_min:
+            messagebox.showerror('Parametro invalido', 'u_max tem de ser maior que u_min.')
+            return
+
+        seq_txt = self.var_ref_seq.get().strip()
+        try:
+            seq = [float(v.replace(',', '.')) for v in seq_txt.split(',') if v.strip()]
+        except ValueError:
+            messagebox.showerror(
+                'Sequencia invalida',
+                'Digite referencias separadas por virgula, em mm, ex.: 70,80,125,70.')
+            return
+        if not seq:
+            messagebox.showerror('Sequencia invalida',
+                                 'A referencia precisa de pelo menos um patamar.')
+            return
+        if any(r < MALHA_REF_MIN_MM or r > MALHA_REF_MAX_MM for r in seq):
+            messagebox.showerror(
+                'Sequencia invalida',
+                f'Cada referencia tem de estar entre {MALHA_REF_MIN_MM:.0f} e '
+                f'{MALHA_REF_MAX_MM:.0f} mm.')
+            return
+        try:
+            dur = self._le_float(self.var_ref_dur, 'duracao por patamar (s)', 1e-6)
+        except ValueError as erro:
+            messagebox.showerror('Parametro invalido', str(erro))
+            return
+
+        try:
+            d_amp = self._le_float(self.var_d_amp, 'amplitude d (%)')
+            d_ini = self._le_float(self.var_d_ini, 'inicio da perturbacao (s)', 0)
+            d_fim = self._le_float(self.var_d_fim, 'fim da perturbacao (s)', 0)
+        except ValueError as erro:
+            messagebox.showerror('Parametro invalido', str(erro))
+            return
+        if d_fim < d_ini:
+            messagebox.showerror('Parametro invalido',
+                                 'O fim da perturbacao tem de vir depois do inicio.')
+            return
+
+        # Mesmo aviso da escada da Aula 3: sequencias longas podem ultrapassar
+        # o historico que o grafico mantem em memoria (JANELA_MAX_S).
+        total_s = len(seq) * dur
+        if total_s > JANELA_MAX_S:
+            if not messagebox.askyesno(
+                    'Malha mais longa que o historico',
+                    f'Esta sequencia vai durar {total_s / 60:.0f} min ({len(seq)} patamares '
+                    f'de {dur / 60:.1f} min), mais que os {JANELA_MAX_S / 60:.0f} min de '
+                    'historico que o grafico mantem em memoria.\n\n'
+                    'O CSV continuo sai completo, mas o inicio do ensaio ja tera saido do '
+                    'grafico quando a malha acabar - e e do grafico que sai o recorte de '
+                    '"exportar dados".\n\nComecar assim mesmo?'):
+                return
+
+        if not self.app.confirma_calibracao_lt('malha fechada'):
+            return
+        if 'LT' not in self.app.painel_leituras.ultimas:
+            messagebox.showwarning('Sem leitura', 'Ainda nao ha leitura de LT. Aguarde a conexao.')
+            return
+
+        sugestao = ARQUIVO_MALHA
+        caminho = filedialog.asksaveasfilename(
+            title='Salvar CSV continuo da malha fechada',
+            defaultextension='.csv', initialfile=os.path.basename(sugestao),
+            filetypes=[('CSV', '*.csv'), ('todos os arquivos', '*.*')])
+        if not caminho:
+            return
+        # Mesmo cuidado das demais abas: alguns Tk/macOS nao aplicam
+        # `defaultextension` de forma confiavel.
+        if not os.path.splitext(caminho)[1]:
+            caminho += '.csv'
+        base, _ext = os.path.splitext(caminho)
+        caminho_pat = base + '_patamares.csv'
+
+        if not self.app.pede_controle('Aula 4 - malha fechada'):
+            return
+
+        h_atual = self.app.contas_para_altura_ativa(self.app.painel_leituras.ultimas['LT'])
+        u_atual = self.app.pump2_pct
+
+        pi = PIDiscreto(Kc, Ti, T, u_min=u_min, u_max=u_max,
+                        anti_windup=(self.var_aw.get() == 'integração condicional'))
+        if ai:
+            pi.inicia(u_atual, seq[0] - h_atual)          # partida sem solavanco
+        else:
+            pi.inicia(u_b, 0.0)                            # v = u_b + Kc*e sempre
+
+        try:
+            self._arquivo = open(caminho, 'w', newline='')
+        except OSError as erro:
+            self.app.libera_controle()
+            messagebox.showerror('Nao foi possivel gravar', f'{caminho}\n\n{erro}')
+            return
+        self._escritor = csv.writer(self._arquivo)
+        self._escritor.writerow(
+            ['t_s', 'r_mm', 'h_mm', 'e_mm', 'v_pct', 'u_pct', 'i_pct', 'd_pct',
+             'pump2_pct', 'qin_lpm'])
+        self._arquivo_pat = open(caminho_pat, 'w', newline='')
+        self._escritor_pat = csv.writer(self._arquivo_pat)
+        self._escritor_pat.writerow(
+            ['patamar', 'r_mm', 't_inicio_s', 'h_ext_mm', 'h_final_mm', 't_sat_s'])
+        for item in self.tabela.get_children():
+            self.tabela.delete(item)
+
+        self.app.gr.limpa_referencia()
+        self._pi = pi
+        self._estado = {
+            'seq': seq, 'idx': 0, 'dur': dur, 'T': T,
+            'd_amp': d_amp, 'd_ini': d_ini, 'd_fim': d_fim,
+            't0': None, 't_ultimo_calc': None, 't_inicio_patamar': 0.0,
+            'buffer_h': deque(maxlen=8000), 't_sat': 0.0,
+            'h_ext': seq[0], 'sentido': None,
+        }
+        # Reaplica o comando ja em vigor (sem pulo nenhum): o primeiro comando
+        # de verdade do controlador so sai no proximo `atualiza_amostra`, e a
+        # partida sem solavanco garante que ele coincide com este.
+        self.app.aplica_comando(100.0, u_atual)
+        self.bt_malha.configure(text='parar malha')
+        self.lb_malha.configure(text=f'patamar 1/{len(seq)}: r -> {seq[0]:.0f} mm')
+
+    def _encerra_malha(self, motivo, desliga_bomba=False):
+        caminho = self._arquivo.name if self._arquivo else ''
+        if self._arquivo is not None:
+            self._arquivo.close()
+        if self._arquivo_pat is not None:
+            self._arquivo_pat.close()
+        self._arquivo = None
+        self._escritor = None
+        self._arquivo_pat = None
+        self._escritor_pat = None
+        self._estado = None
+        self._pi = None
+        if desliga_bomba:
+            self.app.aplica_comando(100.0, 0.0)
+        self.app.libera_controle()
+        self.bt_malha.configure(text='iniciar malha')
+        self.lb_malha.configure(text=f'parado ({motivo}). dados em {caminho}.')
+
+    # -- laco de controle --------------------------------------------------
+
+    def _atualiza_malha(self, t, valores):
+        estado = self._estado
+        if estado['t0'] is None:
+            estado['t0'] = t
+            estado['t_ultimo_calc'] = -estado['T']    # forca o 1o calculo nesta amostra
+        trel = t - estado['t0']
+        h = self.app.contas_para_altura_ativa(valores['LT'])
+        qin = contas_para_vazao(valores['FT2'])
+
+        if h > MALHA_H_DESARME_MM:
+            self._encerra_malha(
+                f'desarme de seguranca: h = {h:.0f} mm > {MALHA_H_DESARME_MM:.0f} mm',
+                desliga_bomba=True)
+            messagebox.showwarning(
+                'Desarme de seguranca',
+                f'A malha foi aberta e PUMP2 foi desligada: o nivel passou de '
+                f'{MALHA_H_DESARME_MM:.0f} mm.')
+            return
+
+        if trel - estado['t_ultimo_calc'] < estado['T'] - 1e-6:
+            return
+        estado['t_ultimo_calc'] = trel
+
+        idx = estado['idx']
+        seq = estado['seq']
+        r = seq[idx]
+        i_usado = self._pi.I                          # I[k], o que ENTROU no calculo de v[k]
+        u, v = self._pi.calcula(r, h)
+        d = estado['d_amp'] if estado['d_ini'] <= trel <= estado['d_fim'] else 0.0
+        pump2_aplicado = max(0.0, min(100.0, u + d))
+        self.app.aplica_comando(100.0, pump2_aplicado)
+
+        e = r - h
+        self._escritor.writerow([
+            f'{trel:.3f}', f'{r:.2f}', f'{h:.3f}', f'{e:.3f}', f'{v:.2f}',
+            f'{u:.2f}', f'{i_usado:.2f}', f'{d:.2f}', f'{pump2_aplicado:.2f}', f'{qin:.4f}',
+        ])
+        self._arquivo.flush()
+
+        if abs(u - v) > 1e-6:
+            estado['t_sat'] += estado['T']
+
+        estado['buffer_h'].append((trel, h))
+        if estado['sentido'] is None:
+            # Direcao do patamar: h no primeiro calculo dele, contra a nova
+            # referencia - e por isso resetado a None a cada troca, abaixo.
+            estado['sentido'] = 'sobe' if r >= h else 'desce'
+            estado['h_ext'] = h
+        elif estado['sentido'] == 'sobe':
+            estado['h_ext'] = max(estado['h_ext'], h)
+        else:
+            estado['h_ext'] = min(estado['h_ext'], h)
+
+        self.app.gr.acrescenta_referencia(t, r)
+
+        self.lb_malha.configure(
+            text=f'patamar {idx + 1}/{len(seq)}: r = {r:.0f} mm | faltam '
+                 f'{self._mmss(estado["dur"] - (trel - estado["t_inicio_patamar"]))} | '
+                 f'h = {h:.1f} mm | e = {e:+.1f} mm | u = {u:.1f} % | v = {v:+.1f} %')
+        self.app.status_ensaio(
+            f'patamar {idx + 1}/{len(seq)} - r {r:.0f} mm   |   h {h:6.1f} mm   |   '
+            f'u {u:5.1f} %   |   v {v:+6.1f} %   |   i {self._pi.I:+6.1f} %')
+
+        if trel - estado['t_inicio_patamar'] >= estado['dur']:
+            h_final = self._janela_media(estado['buffer_h'], trel, self.MEDIA_H_FINAL_S)
+            self._escritor_pat.writerow([
+                idx + 1, f'{r:.1f}', f'{estado["t_inicio_patamar"]:.2f}',
+                f'{estado["h_ext"]:.2f}', f'{h_final:.2f}', f'{estado["t_sat"]:.1f}',
+            ])
+            self._arquivo_pat.flush()
+            linha = self.tabela.insert('', 'end', values=(
+                idx + 1, f'{r:.0f}', f'{estado["t_inicio_patamar"]:.0f}',
+                f'{estado["h_ext"]:.1f}', f'{h_final:.1f}', f'{estado["t_sat"]:.0f}'))
+            self.tabela.see(linha)
+
+            idx += 1
+            if idx >= len(seq):
+                self._encerra_malha('sequencia concluida')
+                return
+            estado['idx'] = idx
+            estado['t_inicio_patamar'] = trel
+            estado['buffer_h'].clear()
+            estado['t_sat'] = 0.0
+            estado['sentido'] = None
+            # o rotulo em si e reescrito no proximo calculo, com o tempo restante
+
+    # -- despacho ------------------------------------------------------
+
+    def atualiza_amostra(self, t, valores):
+        if self._estado is not None:
+            self._atualiza_malha(t, valores)
+
+
 class AbaEmDesenvolvimento(AbaBase):
     """Placeholder para as aulas cujo material ainda nao foi escrito (ver CLAUDE.md)."""
 
@@ -2927,7 +3463,8 @@ class Janela(tk.Tk):
         self._adiciona_aba('Aula 1', AbaAula1)
         self._adiciona_aba('Aula 2', AbaAula2)
         self._adiciona_aba('Aula 3', AbaAula3)
-        for n in range(4, 8):
+        self._adiciona_aba('Aula 4', AbaAula4)
+        for n in range(5, 8):
             self._adiciona_aba(f'Aula {n}', AbaEmDesenvolvimento, n)
 
         self.lb_status = ttk.Label(self, text='iniciando...', anchor='w',
