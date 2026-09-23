@@ -13,8 +13,8 @@ tudo isso numa unica janela:
     `comum/conversoes.py` - por isso cabem no mesmo eixo);
   - dois sliders (e um botao ON/OFF ao lado de cada um, em harmonia com o
     slider) para atuar em VALVE e PUMP2, com o mesmo intertravamento de
-    seguranca da Aula 1: PUMP2 so e liberado com VALVE em 100 % (nao basta
-    S estar parcialmente aberta);
+    seguranca: PUMP2 so fica ligada com VALVE em pelo menos
+    `VALVE_MIN_COM_BOMBA` (30 %);
   - um `ttk.Notebook` com uma aba por aula; cada aba tem as ferramentas de
     ensaio daquela aula (por enquanto, Aulas 1 a 3 - as demais aparecem como
     "em desenvolvimento", no mesmo estado do roteiro).
@@ -109,6 +109,10 @@ def _arredonda_passo(percentual, passo=PASSO_SLIDER):
     return round(round(percentual / passo) * passo, 10)
 
 
+# Intertravamento VALVE x PUMP2: com PUMP2 ligada (qualquer comando > 0), VALVE
+# tem de estar em pelo menos este valor, em % de abertura.
+VALVE_MIN_COM_BOMBA = 30.0
+
 SERIES_GRAFICO = (
     ('LT', 'LT (nivel)', '#0a6ebd'),
     ('FT2', 'FT2 (vazao)', '#d98c00'),
@@ -117,17 +121,20 @@ SERIES_GRAFICO = (
 )
 
 # Curvas do controlador da Aula 4, em % (mesmo eixo esquerdo das series acima):
-# u (comando aplicado, ja saturado), u_K (termo proporcional Kc*e) e u_Ti (termo
-# integral que entrou no calculo de v[k]). So sao desenhadas, e so ganham
-# checkbox, enquanto uma malha da Aula 4 esta em curso (`Grafico.ctrl_ativo`).
+# u (comando pedido pelo controlador, antes da saturacao), u_c (comando aplicado,
+# ja saturado), u_K (termo proporcional Kc*e), u_Ti (termo
+# integral que entrou no calculo de u[k]) e u_D (termo derivativo, so existe no
+# PID livre do topo da janela - o checkbox some na malha da Aula 4). So sao
+# desenhadas, e so ganham checkbox, enquanto uma malha (Aula 4 ou PID livre)
+# esta em curso (`Grafico.ctrl_ativo`).
 # u_K pode ser negativo, entao o eixo esquerdo se estende alem de -5..105 %
 # quando elas estao em tela (ver `Grafico.redesenha`).
 SERIES_CTRL = (
-    ('v', 'v (u sem saturacao)', '#4dd0e1'),
-    ('u', 'u (saturado)', '#00565f'),
-    ('ud', 'u+d (enviado a bomba)', '#37474f'),
+    ('u', 'u (sem saturacao)', '#4dd0e1'),
+    ('uc', 'u_c (saturado)', '#00565f'),
     ('uK', 'u_K (proporcional)', '#c2185b'),
     ('uTi', 'u_Ti (integral)', '#5d4037'),
+    ('uD', 'u_D (derivativo)', '#ef6c00'),
 )
 
 # Erro e = r - h, em mm: mesma natureza da curva de altura, entao vai no eixo
@@ -185,6 +192,17 @@ ARQUIVO_MALHA = 'malha_pi.csv'
 MALHA_REF_MIN_MM = 40.0
 MALHA_REF_MAX_MM = 150.0
 MALHA_H_DESARME_MM = 160.0
+
+# PID livre (painel "Comando com Controlador PID", no topo da janela): valores
+# iniciais dos campos. Kp e Ki sao os do exemplo da Aula 4 (Kc = 1,85 %/mm,
+# Ti = 41 s -> Ki = Kc/Ti); Kd = 0 deixa o controlador como o PI da Aula 4.
+# Colunas extras do CSV exportado do grafico, acrescentadas so quando o recorte
+# tem PID livre ativo em alguma amostra (ver `PainelPID.registro`).
+COLUNAS_PID_EXPORTACAO = ['pid_ativo', 'pid_Kp_pct_mm', 'pid_Ki_pct_mm_s', 'pid_Kd_pct_s_mm',
+                          'pid_setpoint_mm', 'pid_T_s', 'pid_Tf_s', 'pid_umin_pct',
+                          'pid_umax_pct', 'pid_anti_windup']
+PID_PADRAO = {'Kp': '1.85', 'Ki': '0.045', 'Kd': '0', 'sp': '70', 'T': '2',
+              'Tf': '6', 'umin': '45', 'umax': '100'}
 
 
 def faixa_ajustada(valores, span_minimo, reserva):
@@ -304,7 +322,7 @@ class PlantaCLP:
                 self.plc = None
 
     def escreve(self, valve, pump2):
-        # A valvula vai sempre na frente da bomba (intertravamento da Aula 1).
+        # A valvula vai sempre na frente da bomba (intertravamento: VALVE >= 30 % com PUMP2 ligada).
         for r in self.plc.write((TAG_VALVE, valve), (TAG_PUMP2, pump2)):
             if r.error:
                 raise RuntimeError(f'escrita em {r.tag}: {r.error}')
@@ -2097,11 +2115,11 @@ class AbaAula2(AbaBase):
                 'A duracao tem de ser maior que o t do degrau, senao o degrau '
                 'nunca chega a ser aplicado.')
             return
-        if valve < 100.0 - 1e-6:
+        if valve < VALVE_MIN_COM_BOMBA - 1e-6:
             messagebox.showerror(
                 'Intertravamento',
-                f'valve (%) = {valve:.0f} bloquearia PUMP2 (PUMP2 so e liberado com '
-                'VALVE em 100 %). Use valve = 100.')
+                f'valve (%) = {valve:.0f} bloquearia PUMP2 (PUMP2 so fica ligada com '
+                f'VALVE em pelo menos {VALVE_MIN_COM_BOMBA:.0f} %).')
             return
 
         if not self.app.confirma_calibracao_lt('ensaio de degrau'):
@@ -2343,7 +2361,7 @@ class AbaAula3(AbaBase):
                       'histerese. heq(u) vem da escada abaixo, de 600 s por patamar.\n'
                       'O botao "salvar grafico qin x u" gera a figura da curva do atuador,\n'
                       'com subida e descida como series separadas (item 1 da analise).\n'
-                      'Exige VALVE em 100 % (liberado pelo slider/botao do topo da janela).',
+                      'Exige VALVE em pelo menos 30 % (slider/botao do topo da janela).',
             justify='left').grid(row=0, column=0, columnspan=6, sticky='w', pady=(0, 8))
 
         campos_var = (
@@ -2912,12 +2930,12 @@ class PIDiscreto:
 
     def calcula(self, r, h):
         e = r - h
-        v = self.Kc * e + self.I                     # comando pedido
-        u = min(max(v, self.u_min), self.u_max)      # comando aplicado
-        agrava = (v > self.u_max and e > 0) or (v < self.u_min and e < 0)
+        u = self.Kc * e + self.I                     # comando pedido
+        uc = min(max(u, self.u_min), self.u_max)     # comando aplicado
+        agrava = (u > self.u_max and e > 0) or (u < self.u_min and e < 0)
         if self.Ti is not None and not (self.anti_windup and agrava):
             self.I += self.Kc * self.T / self.Ti * e # Euler progressivo
-        return u, v
+        return uc, u
 
 
 class AbaAula4(AbaBase):
@@ -2944,8 +2962,8 @@ class AbaAula4(AbaBase):
         ttk.Label(
             bloco, text='Fecha a malha de nivel com o PI discreto do Cod. pi-discreto: mesma\n'
                         'saturacao, mesmo anti-windup por integracao condicional (opcional) e\n'
-                        'mesma partida sem solavanco do roteiro. Exige VALVE em 100 % (liberado\n'
-                        'pelo slider/botao do topo da janela). Por seguranca, a malha abre e\n'
+                        'mesma partida sem solavanco do roteiro. Exige VALVE em pelo menos 30 %\n'
+                        '(slider/botao do topo da janela). Por seguranca, a malha abre e\n'
                         f'desliga PUMP2 se h passar de {MALHA_H_DESARME_MM:.0f} mm.',
             justify='left').grid(row=0, column=0, columnspan=6, sticky='w', pady=(0, 10))
 
@@ -3007,35 +3025,15 @@ class AbaAula4(AbaBase):
             foreground='#555', font=('TkDefaultFont', 8)).grid(
             row=2, column=0, columnspan=4, sticky='w', pady=(4, 0))
 
-        # -- perturbacao ------------------------------------------------
-        quad_pert = ttk.LabelFrame(bloco, text='Perturbacao', padding=8)
-        quad_pert.grid(row=3, column=0, columnspan=6, sticky='we', pady=(0, 10))
-        campos_pert = (
-            ('amplitude d [%]', 'var_d_amp', '0'),
-            ('inicio [s]', 'var_d_ini', '0'),
-            ('fim [s]', 'var_d_fim', '0'),
-        )
-        for i, (rotulo, nome, padrao) in enumerate(campos_pert):
-            v = tk.StringVar(value=padrao)
-            setattr(self, nome, v)
-            ttk.Label(quad_pert, text=rotulo + ':').grid(row=0, column=2 * i, sticky='w')
-            ttk.Entry(quad_pert, textvariable=v, width=8).grid(
-                row=0, column=2 * i + 1, sticky='w', padx=(4, 20))
-        ttk.Label(
-            quad_pert, text='amplitude nula = sem perturbacao; instantes contados desde o '
-                            'inicio da malha.',
-            foreground='#555', font=('TkDefaultFont', 8)).grid(
-            row=1, column=0, columnspan=6, sticky='w', pady=(4, 0))
-
         # -- iniciar/parar e tabela ao vivo ----------------------------------
         self.bt_malha = ttk.Button(bloco, text='iniciar malha', command=self._alterna_malha)
-        self.bt_malha.grid(row=4, column=0, columnspan=2, sticky='w', pady=(4, 0))
+        self.bt_malha.grid(row=3, column=0, columnspan=2, sticky='w', pady=(4, 0))
         self.lb_malha = ttk.Label(bloco, text='parado.')
-        self.lb_malha.grid(row=4, column=2, columnspan=4, sticky='w', pady=(4, 0))
+        self.lb_malha.grid(row=3, column=2, columnspan=4, sticky='w', pady=(4, 0))
 
         quadro_tab = ttk.Frame(bloco)
-        quadro_tab.grid(row=5, column=0, columnspan=6, sticky='nsew', pady=(8, 0))
-        bloco.rowconfigure(5, weight=1)
+        quadro_tab.grid(row=4, column=0, columnspan=6, sticky='nsew', pady=(8, 0))
+        bloco.rowconfigure(4, weight=1)
         bloco.columnconfigure(5, weight=1)
         quadro_tab.rowconfigure(0, weight=1)
         quadro_tab.columnconfigure(0, weight=1)
@@ -3136,18 +3134,6 @@ class AbaAula4(AbaBase):
             messagebox.showerror('Parametro invalido', str(erro))
             return
 
-        try:
-            d_amp = self._le_float(self.var_d_amp, 'amplitude d (%)')
-            d_ini = self._le_float(self.var_d_ini, 'inicio da perturbacao (s)', 0)
-            d_fim = self._le_float(self.var_d_fim, 'fim da perturbacao (s)', 0)
-        except ValueError as erro:
-            messagebox.showerror('Parametro invalido', str(erro))
-            return
-        if d_fim < d_ini:
-            messagebox.showerror('Parametro invalido',
-                                 'O fim da perturbacao tem de vir depois do inicio.')
-            return
-
         # Mesmo aviso da escada da Aula 3: sequencias longas podem ultrapassar
         # o historico que o grafico mantem em memoria (JANELA_MAX_S).
         total_s = len(seq) * dur
@@ -3193,7 +3179,7 @@ class AbaAula4(AbaBase):
         if ai:
             pi.inicia(u_atual, seq[0] - h_atual)          # partida sem solavanco
         else:
-            pi.inicia(u_b, 0.0)                            # v = u_b + Kc*e sempre
+            pi.inicia(u_b, 0.0)                            # u = u_b + Kc*e sempre
 
         try:
             self._arquivo = open(caminho, 'w', newline='')
@@ -3203,8 +3189,8 @@ class AbaAula4(AbaBase):
             return
         self._escritor = csv.writer(self._arquivo)
         self._escritor.writerow(
-            ['t_s', 'r_mm', 'h_mm', 'e_mm', 'v_pct', 'u_pct', 'i_pct', 'd_pct',
-             'pump2_pct', 'qin_lpm'])
+            ['t_s', 'r_mm', 'h_mm', 'e_mm', 'u_pct', 'uc_pct', 'i_pct',
+             'valve_pct', 'pump2_pct', 'qin_lpm'])
         self._arquivo_pat = open(caminho_pat, 'w', newline='')
         self._escritor_pat = csv.writer(self._arquivo_pat)
         self._escritor_pat.writerow(
@@ -3218,7 +3204,6 @@ class AbaAula4(AbaBase):
         self._pi = pi
         self._estado = {
             'seq': seq, 'idx': 0, 'dur': dur, 'T': T,
-            'd_amp': d_amp, 'd_ini': d_ini, 'd_fim': d_fim,
             't0': None, 't_ultimo_calc': None, 't_inicio_patamar': 0.0,
             'buffer_h': deque(maxlen=8000), 't_sat': 0.0,
             'h_ext': seq[0], 'sentido': None,
@@ -3282,20 +3267,20 @@ class AbaAula4(AbaBase):
         idx = estado['idx']
         seq = estado['seq']
         r = seq[idx]
-        i_usado = self._pi.I                          # I[k], o que ENTROU no calculo de v[k]
-        u, v = self._pi.calcula(r, h)
-        d = estado['d_amp'] if estado['d_ini'] <= trel <= estado['d_fim'] else 0.0
-        pump2_aplicado = max(0.0, min(100.0, u + d))
-        self.app.aplica_comando(self.app.valve_pct, pump2_aplicado)
+        i_usado = self._pi.I                          # I[k], o que ENTROU no calculo de u[k]
+        uc, u = self._pi.calcula(r, h)
+        # O disturbio e a VALVE, movida pelo aluno no slider: a malha so a le.
+        valve = self.app.valve_pct
+        self.app.aplica_comando(valve, uc)
 
         e = r - h
         self._escritor.writerow([
-            f'{trel:.3f}', f'{r:.2f}', f'{h:.3f}', f'{e:.3f}', f'{v:.2f}',
-            f'{u:.2f}', f'{i_usado:.2f}', f'{d:.2f}', f'{pump2_aplicado:.2f}', f'{qin:.4f}',
+            f'{trel:.3f}', f'{r:.2f}', f'{h:.3f}', f'{e:.3f}', f'{u:.2f}',
+            f'{uc:.2f}', f'{i_usado:.2f}', f'{valve:.2f}', f'{uc:.2f}', f'{qin:.4f}',
         ])
         self._arquivo.flush()
 
-        if abs(u - v) > 1e-6:
+        if abs(uc - u) > 1e-6:
             estado['t_sat'] += estado['T']
 
         estado['buffer_h'].append((trel, h))
@@ -3310,18 +3295,18 @@ class AbaAula4(AbaBase):
             estado['h_ext'] = min(estado['h_ext'], h)
 
         self.app.gr.acrescenta_referencia(t, r)
-        self.app.gr.acrescenta(t, {'v': v, 'u': u, 'ud': pump2_aplicado, 'e': e,
+        self.app.gr.acrescenta(t, {'u': u, 'uc': uc, 'e': e,
                                    'uK': self._pi.Kc * e, 'uTi': i_usado})
 
         self.lb_malha.configure(
             text=f'patamar {idx + 1}/{len(seq)}: r = {r:.0f} mm | faltam '
                  f'{self._mmss(estado["dur"] - (trel - estado["t_inicio_patamar"]))} | '
-                 f'h = {h:.1f} mm | e = {e:+.1f} mm | u = {u:.1f} % '
-                 f'(P {self._pi.Kc * e:+.1f} % | I {i_usado:+.1f} %) | v = {v:+.1f} %')
+                 f'h = {h:.1f} mm | e = {e:+.1f} mm | u_c = {uc:.1f} % '
+                 f'(P {self._pi.Kc * e:+.1f} % | I {i_usado:+.1f} %) | u = {u:+.1f} %')
         self.app.status_ensaio(
             f'patamar {idx + 1}/{len(seq)} - r {r:.0f} mm   |   h {h:6.1f} mm   |   '
-            f'u {u:5.1f} % (P {self._pi.Kc * e:+6.1f} | I {i_usado:+6.1f})   |   '
-            f'v {v:+6.1f} %')
+            f'u_c {uc:5.1f} % (P {self._pi.Kc * e:+6.1f} | I {i_usado:+6.1f})   |   '
+            f'u {u:+6.1f} %')
 
         if trel - estado['t_inicio_patamar'] >= estado['dur']:
             h_final = self._janela_media(estado['buffer_h'], trel, self.MEDIA_H_FINAL_S)
@@ -3353,6 +3338,293 @@ class AbaAula4(AbaBase):
             self._atualiza_malha(t, valores)
 
 
+class PIDLivre:
+    """PID em forma paralela e de posicao, para o painel "Comando com
+    Controlador PID": u = Kp*e + I + Kd*d/dt(-h filtrado).
+
+    Diferencas em relacao ao `PIDiscreto` da Aula 4 (que segue literalmente o
+    roteiro e nao muda): ganhos em forma paralela (Ki = Kc/Ti, Kd = Kc*Td),
+    derivada sobre a MEDIDA (sem chute quando o set-point muda) passada por um
+    filtro de primeira ordem de constante Tf, e os parametros sao atributos
+    comuns, reatribuiveis a quente entre duas chamadas de `calcula`. Como o
+    integrador acumula Ki*T*e (e nao Ki * soma de e), mexer em Ki nao da
+    degrau no comando; mexer em Kp da, na proporcao Delta_Kp * e.
+    """
+
+    def __init__(self, Kp, Ki, Kd, T, Tf, u_min, u_max, anti_windup=True):
+        self.Kp, self.Ki, self.Kd, self.T, self.Tf = Kp, Ki, Kd, T, Tf
+        self.u_min, self.u_max = u_min, u_max
+        self.anti_windup = anti_windup
+        self.I = 0.0
+        self.dh = 0.0                 # dh/dt filtrado, em mm/s
+        self.h_ant = 0.0
+
+    def inicia(self, u_atual, e_atual, h):
+        """Partida sem solavanco: u[0] = u_atual (derivada ainda nula)."""
+        self.I = u_atual - self.Kp * e_atual
+        self.dh = 0.0
+        self.h_ant = h
+
+    def calcula(self, r, h):
+        """Devolve (uc, u, P, I, D): I e o valor que ENTROU no calculo de u."""
+        e = r - h
+        a = self.Tf / (self.Tf + self.T)
+        self.dh = a * self.dh + (1.0 - a) * (h - self.h_ant) / self.T
+        self.h_ant = h
+        P = self.Kp * e
+        I = self.I
+        D = -self.Kd * self.dh
+        u = P + I + D
+        uc = min(max(u, self.u_min), self.u_max)
+        agrava = (u > self.u_max and e > 0) or (u < self.u_min and e < 0)
+        if self.Ki != 0.0 and not (self.anti_windup and agrava):
+            self.I += self.Ki * self.T * e
+        return uc, u, P, I, D
+
+
+class PainelPID(ttk.LabelFrame):
+    """Comando com Controlador PID: fecha a malha de nivel "a vontade", fora de
+    qualquer pratica. Ganhos, set-point e demais campos valem a quente - sao
+    relidos a cada calculo do controlador."""
+
+    def __init__(self, master, app, **kw):
+        super().__init__(master, text='Comando com Controlador PID', **kw)
+        self.app = app
+        self._pid = None
+        self._t_ult = None
+        self._p = None               # ultimo conjunto de parametros valido
+        # Registro dos parametros em vigor ao longo do tempo, para o CSV
+        # exportado do grafico: lista de {'t_ini', 't_fim', 'p'} na mesma base
+        # de tempo do historico da janela; 't_fim' None = segmento aberto.
+        # Um segmento novo nasce a cada ativacao e a cada mudanca a quente.
+        self.registro = []
+        self._t_amostra = 0.0
+
+        grupos = (
+            ('Ganhos', (('Kp [%/mm]', 'Kp'), ('Ki [%/(mm.s)]', 'Ki'),
+                        ('Kd [%.s/mm]', 'Kd'))),
+            ('Parametros', (('T [s]', 'T'), ('Tf deriv. [s]', 'Tf'),
+                            ('u_min [%]', 'umin'), ('u_max [%]', 'umax'))),
+        )
+        self.vars = {}
+        for gcol, (titulo, campos) in enumerate(grupos):
+            quad = ttk.LabelFrame(self, text=titulo, padding=(6, 2))
+            quad.grid(row=0, column=gcol, sticky='ns', padx=(0, 6))
+            for i, (rotulo, chave) in enumerate(campos):
+                v = tk.StringVar(value=PID_PADRAO[chave])
+                self.vars[chave] = v
+                # parametros em 2 colunas de campos; ganhos em 1 coluna
+                linha, col = divmod(i, 2) if titulo == 'Parametros' else (i, 0)
+                ttk.Label(quad, text=rotulo + ':').grid(
+                    row=linha, column=2 * col, sticky='w', pady=(0 if linha == 0 else 3, 0))
+                ttk.Entry(quad, textvariable=v, width=7).grid(
+                    row=linha, column=2 * col + 1, sticky='w', padx=(4, 10),
+                    pady=(0 if linha == 0 else 3, 0))
+            if titulo == 'Parametros':
+                self.var_aw = tk.BooleanVar(value=True)
+                ttk.Checkbutton(quad, text='anti-windup', variable=self.var_aw).grid(
+                    row=2, column=0, columnspan=4, sticky='w', pady=(3, 0))
+
+        # Set-point em separado, afastado dos ganhos/parametros por um
+        # separador vertical.
+        ttk.Separator(self, orient='vertical').grid(row=0, column=2, sticky='ns', padx=8)
+        quad_sp = ttk.LabelFrame(self, text='Set-point', padding=(6, 2))
+        quad_sp.grid(row=0, column=3, sticky='n')
+        self.vars['sp'] = tk.StringVar(value=PID_PADRAO['sp'])
+        ttk.Label(quad_sp, text='h [mm]:').grid(row=0, column=0, sticky='w')
+        ttk.Entry(quad_sp, textvariable=self.vars['sp'], width=8,
+                  font=('TkDefaultFont', 11, 'bold')).grid(row=0, column=1, padx=(4, 0))
+
+        self.bt = ttk.Button(self, text='Ativar PID', command=self._alterna)
+        self.bt.grid(row=1, column=0, sticky='w', pady=(8, 0))
+        self.lb = ttk.Label(self, text='desativado.', foreground='#555',
+                            font=('TkDefaultFont', 8), wraplength=420, justify='left')
+        self.lb.grid(row=1, column=1, columnspan=3, sticky='w', padx=(4, 0), pady=(8, 0))
+
+    # -- leitura dos campos --------------------------------------------
+
+    def _le(self, chave, nome, minimo=None, maximo=None):
+        try:
+            valor = float(self.vars[chave].get().replace(',', '.'))
+        except ValueError:
+            raise ValueError(f'{nome} precisa ser um numero.')
+        if minimo is not None and valor < minimo:
+            raise ValueError(f'{nome} tem de ser >= {minimo:g}.')
+        if maximo is not None and valor > maximo:
+            raise ValueError(f'{nome} tem de ser <= {maximo:g}.')
+        return valor
+
+    # chave -> (nome, minimo, maximo)
+    LIMITES = {
+        'Kp': ('Kp', 0.0, None), 'Ki': ('Ki', 0.0, None), 'Kd': ('Kd', 0.0, None),
+        'sp': ('set-point', MALHA_REF_MIN_MM, MALHA_REF_MAX_MM),
+        'T': ('T', 0.5, None), 'Tf': ('Tf', 0.0, None),
+        'umin': ('u_min', 0.0, 100.0), 'umax': ('u_max', 0.0, 100.0),
+    }
+
+    def _le_todos(self):
+        p = {chave: self._le(chave, *lim) for chave, lim in self.LIMITES.items()}
+        if p['umax'] <= p['umin']:
+            raise ValueError('u_max tem de ser maior que u_min.')
+        return p
+
+    def _le_a_quente(self):
+        """Como `_le_todos`, mas campo a campo: um campo invalido mantem o
+        ultimo valor bom SO dele, sem travar os demais. Devolve (p, aviso)."""
+        p, erros = dict(self._p), []
+        for chave, lim in self.LIMITES.items():
+            try:
+                p[chave] = self._le(chave, *lim)
+            except ValueError as erro:
+                erros.append(str(erro))
+        if p['umax'] <= p['umin']:
+            p['umin'], p['umax'] = self._p['umin'], self._p['umax']
+            erros.append('u_max tem de ser maior que u_min.')
+        aviso = f'  [mantido o valor anterior: {" ".join(erros)}]' if erros else ''
+        return p, aviso
+
+    def _aplica_parametros(self, p):
+        pid = self._pid
+        pid.Kp, pid.Ki, pid.Kd, pid.T, pid.Tf = p['Kp'], p['Ki'], p['Kd'], p['T'], p['Tf']
+        pid.u_min, pid.u_max = p['umin'], p['umax']
+        pid.anti_windup = self.var_aw.get()
+
+    # -- registro de parametros (para a exportacao) --------------------
+
+    def _abre_segmento(self, t, p):
+        self.registro.append({'t_ini': t, 't_fim': None,
+                              'p': dict(p, aw=self.var_aw.get())})
+        if self.app._historico:
+            t_min = self.app._historico[0][0]
+            self.registro = [g for g in self.registro
+                             if g['t_fim'] is None or g['t_fim'] >= t_min]
+
+    def _fecha_segmento(self, t):
+        if self.registro and self.registro[-1]['t_fim'] is None:
+            self.registro[-1]['t_fim'] = t
+
+    def parametros_em(self, t):
+        """Parametros do PID em vigor no instante `t` (base de tempo do
+        historico), ou None se nao havia PID ativo."""
+        for g in self.registro:
+            if g['t_ini'] <= t and (g['t_fim'] is None or t < g['t_fim']):
+                return g['p']
+        return None
+
+    def linha_exportacao(self, t):
+        """Valores das COLUNAS_PID_EXPORTACAO para a amostra em `t`."""
+        p = self.parametros_em(t)
+        if p is None:
+            return [0] + [''] * (len(COLUNAS_PID_EXPORTACAO) - 1)
+        return [1, f'{p["Kp"]:g}', f'{p["Ki"]:g}', f'{p["Kd"]:g}', f'{p["sp"]:g}',
+                f'{p["T"]:g}', f'{p["Tf"]:g}', f'{p["umin"]:g}', f'{p["umax"]:g}',
+                int(p['aw'])]
+
+    # -- ativar/desativar ----------------------------------------------
+
+    def _alterna(self):
+        if self._pid is None:
+            self._ativa()
+        else:
+            self._desativa('desativado pelo usuario')
+
+    def _ativa(self):
+        try:
+            p = self._le_todos()
+        except ValueError as erro:
+            messagebox.showerror('Parametro invalido', str(erro))
+            return
+        if 'LT' not in self.app.painel_leituras.ultimas:
+            messagebox.showwarning('Sem leitura', 'Ainda nao ha leitura de LT. Aguarde a conexao.')
+            return
+        if not self.app.confirma_calibracao_lt('PID livre'):
+            return
+        if not self.app.pede_controle('PID livre'):
+            return
+
+        h = self.app.contas_para_altura_ativa(self.app.painel_leituras.ultimas['LT'])
+        u_atual = self.app.pump2_pct
+        self._pid = PIDLivre(p['Kp'], p['Ki'], p['Kd'], p['T'], p['Tf'],
+                             p['umin'], p['umax'], self.var_aw.get())
+        self._pid.inicia(u_atual, p['sp'] - h, h)
+        self._t_ult = None
+        self._p = p
+        hist = self.app._historico
+        self._t_amostra = hist[-1][0] if hist else 0.0
+        self._abre_segmento(self._t_amostra + 1e-6, p)
+
+        self.app.gr.limpa_referencia()
+        self.app.gr.limpa_ctrl()
+        self.app.mostra_curvas_controlador(True, com_derivativo=True)
+        # Reaplica o comando em vigor com VALVE em 100 %; a partir daqui o
+        # slider de VALVE fica livre (perturbacao) e o de PUMP2, bloqueado.
+        self.app.aplica_comando(100.0, u_atual)
+        self.app.define_valve_livre(True)
+        self.bt.configure(text='Desativar PID')
+        self.lb.configure(text='ativo. Ganhos e set-point valem a quente.', foreground='#a11')
+
+    def _desativa(self, motivo, desliga_bomba=False):
+        self._fecha_segmento(self._t_amostra + 1e-6)   # inclui a ultima amostra
+        self._pid = None
+        self.app.define_valve_livre(False)
+        if desliga_bomba:
+            self.app.aplica_comando(100.0, 0.0)
+        elif self.app.valve_pct < 100.0 - 1e-6:
+            self.app.aplica_comando(100.0, self.app.pump2_pct)
+        self.app.mostra_curvas_controlador(False)
+        self.app.libera_controle()
+        self.bt.configure(text='Ativar PID')
+        self.lb.configure(text=f'desativado ({motivo}).', foreground='#555')
+
+    # -- laco de controle ----------------------------------------------
+
+    def atualiza_amostra(self, t, valores):
+        pid = self._pid
+        if pid is None:
+            return
+        self._t_amostra = t
+        h = self.app.contas_para_altura_ativa(valores['LT'])
+
+        if h > MALHA_H_DESARME_MM:
+            self._desativa(f'desarme de seguranca: h = {h:.0f} mm > '
+                           f'{MALHA_H_DESARME_MM:.0f} mm', desliga_bomba=True)
+            messagebox.showwarning(
+                'Desarme de seguranca',
+                f'O PID foi desativado e PUMP2 foi desligada: o nivel passou de '
+                f'{MALHA_H_DESARME_MM:.0f} mm.')
+            return
+
+        # Relê os campos a cada amostra: entrada invalida (ou pela metade, ex.:
+        # campo vazio durante a digitacao) mantem os valores anteriores.
+        p, aviso = self._le_a_quente()
+        self._p = p
+        if dict(p, aw=self.var_aw.get()) != self.registro[-1]['p']:
+            self._fecha_segmento(t)             # mudanca a quente: novo segmento
+            self._abre_segmento(t, p)
+        self._aplica_parametros(p)
+        sp = p['sp']
+
+        if self._t_ult is not None and t - self._t_ult < pid.T - 1e-6:
+            return
+        if self._t_ult is None:
+            pid.h_ant = h              # 1o calculo: derivada nula
+        self._t_ult = t
+
+        uc, u, P, I, D = pid.calcula(sp, h)
+        self.app.aplica_comando(self.app.valve_pct, uc)   # VALVE e do usuario
+
+        e = sp - h
+        self.app.gr.acrescenta_referencia(t, sp)
+        self.app.gr.acrescenta(t, {'u': u, 'uc': uc, 'e': e, 'uK': P, 'uTi': I, 'uD': D})
+
+        texto = (f'h = {h:.1f} mm | r = {sp:.0f} | e = {e:+.1f} | u_c = {uc:.1f} % '
+                 f'(P {P:+.1f} | I {I:+.1f} | D {D:+.1f}) | u = {u:+.1f} %')
+        self.lb.configure(
+            text='ativo.' + aviso if aviso else 'ativo. Ganhos e set-point valem a quente.',
+            foreground='#a11')
+        self.app.status_ensaio(texto + aviso)
+
+
 # ---------------------------------------------------------------------------
 # Janela principal
 # ---------------------------------------------------------------------------
@@ -3362,8 +3634,8 @@ class Janela(tk.Tk):
     def __init__(self, planta, janela_s=JANELA_S):
         super().__init__()
         self.title('Planta TQ CE117 - hub de ensaios')
-        self.geometry('980x760')
-        self.minsize(760, 600)
+        self.geometry('1180x800')
+        self.minsize(960, 600)
 
         # As caixas de dialogo padrao (messagebox.show*/askyesno) usam por
         # padrao um wrapLength estreito (poucas polegadas), o que deixa o
@@ -3391,9 +3663,9 @@ class Janela(tk.Tk):
         self.valve_pct = 0.0
         self.pump2_pct = 0.0
         self.controle_owner = None    # None = sliders; string = nome do ensaio dono
-        # True so durante a malha da Aula 4: o slider de VALVE fica livre para o
-        # aluno injetar disturbio de vazao, a malha respeita o valor dele e o
-        # intertravamento "PUMP2 so com VALVE em 100 %" fica relaxado.
+        # True so durante a malha da Aula 4: o slider de VALVE fica liberado para
+        # o aluno injetar disturbio de vazao e a malha respeita o valor dele; o
+        # intertravamento (VALVE >= VALVE_MIN_COM_BOMBA com PUMP2 ligada) continua valendo.
         self.valve_livre = False
         self.zerar_ao_sair = tk.BooleanVar(value=True)
 
@@ -3417,14 +3689,18 @@ class Janela(tk.Tk):
     # -- construcao da tela --------------------------------------------
 
     def _monta(self):
-        comando = ttk.LabelFrame(self, text='Comando manual', padding=10)
-        comando.pack(fill='x', padx=10, pady=(10, 6))
+        # Barra superior dividida em duas: comando manual (esquerda) e PID livre
+        # (direita).
+        barra_comando = ttk.Frame(self)
+        barra_comando.pack(fill='x', padx=10, pady=(10, 6))
+        comando = ttk.LabelFrame(barra_comando, text='Comando manual', padding=10)
+        comando.pack(side='left', fill='both', expand=True, padx=(0, 6))
 
         ttk.Label(comando, text='VALVE (S):').grid(row=0, column=0, sticky='w')
         self.var_slider_valve = tk.DoubleVar(value=0.0)
         self.sl_valve = ttk.Scale(
             comando, from_=0, to=100, orient='horizontal',
-            variable=self.var_slider_valve, command=self._slider_valve_moveu, length=260)
+            variable=self.var_slider_valve, command=self._slider_valve_moveu, length=140)
         self.sl_valve.grid(row=0, column=1, sticky='we', padx=8)
         self.sl_valve.bind('<Left>', lambda _e: self._incrementa_valve(-PASSO_SLIDER) or 'break')
         self.sl_valve.bind('<Down>', lambda _e: self._incrementa_valve(-PASSO_SLIDER) or 'break')
@@ -3442,7 +3718,7 @@ class Janela(tk.Tk):
         self.var_slider_pump2 = tk.DoubleVar(value=0.0)
         self.sl_pump2 = ttk.Scale(
             comando, from_=0, to=100, orient='horizontal',
-            variable=self.var_slider_pump2, command=self._slider_pump2_moveu, length=260)
+            variable=self.var_slider_pump2, command=self._slider_pump2_moveu, length=140)
         self.sl_pump2.grid(row=1, column=1, sticky='we', padx=8, pady=(6, 0))
         self.sl_pump2.bind('<Left>', lambda _e: self._incrementa_pump2(-PASSO_SLIDER) or 'break')
         self.sl_pump2.bind('<Down>', lambda _e: self._incrementa_pump2(-PASSO_SLIDER) or 'break')
@@ -3458,9 +3734,12 @@ class Janela(tk.Tk):
 
         ttk.Checkbutton(comando, text='zerar saidas ao sair',
                         variable=self.zerar_ao_sair).grid(
-            row=0, column=5, rowspan=2, sticky='e', padx=(20, 0))
+            row=2, column=0, columnspan=5, sticky='w', pady=(6, 0))
         comando.columnconfigure(1, weight=1)
-        comando.columnconfigure(5, weight=1)
+
+        self.painel_pid = PainelPID(barra_comando, self, padding=10)
+        self.painel_pid.pack(side='left', fill='y')
+        self._abas.append(self.painel_pid)
 
         painel = ttk.Panedwindow(self, orient='vertical')
         painel.pack(fill='both', expand=True, padx=10, pady=(0, 6))
@@ -3529,18 +3808,19 @@ class Janela(tk.Tk):
             command=lambda: self.gr.define_visivel_altura(self.var_serie_altura.get()))
         self.cb_serie_altura.pack(side='left', padx=(6, 0))
 
-        # Curvas do controlador (u, u_K, u_Ti): o quadro so e empacotado
+        # Curvas do controlador (u, u_c, u_K, u_Ti): o quadro so e empacotado
         # enquanto a malha da Aula 4 esta em curso (`mostra_curvas_controlador`).
         self.quadro_ctrl = ttk.Frame(linha_series)
         self.vars_ctrl = {}
+        self.cbs_ctrl = {}
         for chave, rotulo, cor in SERIES_CTRL + (SERIE_ERRO,):
             var = tk.BooleanVar(value=True)
             self.vars_ctrl[chave] = var
-            tk.Checkbutton(
+            self.cbs_ctrl[chave] = tk.Checkbutton(
                 self.quadro_ctrl, text=rotulo, variable=var, fg=cor, activeforeground=cor,
                 selectcolor='white', font=('TkDefaultFont', 9),
-                command=lambda c=chave, v=var: self.gr.define_visivel(c, v.get()),
-            ).pack(side='left', padx=(6, 0))
+                command=lambda c=chave, v=var: self.gr.define_visivel(c, v.get()))
+            self.cbs_ctrl[chave].pack(side='left', padx=(6, 0))
 
         # Altura generosa por padrao; o proprio `Panedwindow` deixa o usuario
         # arrastar a divisoria para dar ainda mais (ou menos) espaco ao
@@ -3637,20 +3917,25 @@ class Janela(tk.Tk):
             return
         self.lb_status.configure(text=f'{self.controle_owner}: {texto}', foreground='#a11')
 
-    def _valve_totalmente_aberta(self):
-        return self.valve_pct >= 100.0 - 1e-6
+    def _valve_permite_pump2(self):
+        return self.valve_pct >= VALVE_MIN_COM_BOMBA - 1e-6
+
+    def _valve_minimo(self):
+        """Menor VALVE aceita agora: com PUMP2 ligada, VALVE_MIN_COM_BOMBA."""
+        return VALVE_MIN_COM_BOMBA if self.pump2_pct > 1e-6 else 0.0
 
     def _atualiza_controles(self):
         automatico = self.controle_owner is not None
         estado = 'disabled' if automatico and not self.valve_livre else 'normal'
         self.sl_valve.configure(state=estado)
-        # PUMP2 so libera com VALVE em 100 % (S totalmente aberta antes de PUMP2).
-        pump2_liberado = not automatico and self._valve_totalmente_aberta()
+        # PUMP2 so libera com VALVE >= VALVE_MIN_COM_BOMBA.
+        pump2_liberado = not automatico and self._valve_permite_pump2()
         self.sl_pump2.configure(state='normal' if pump2_liberado else 'disabled')
 
         self._pinta_botao(self.bt_valve, 'VALVE (S)', self.valve_pct, habilitado=not automatico)
         self._pinta_botao(self.bt_pump2, 'PUMP2', self.pump2_pct, habilitado=pump2_liberado,
-                          motivo_bloqueio='abra VALVE em 100 % antes' if not automatico else None)
+                          motivo_bloqueio=(f'VALVE >= {VALVE_MIN_COM_BOMBA:.0f} % antes'
+                                           if not automatico else None))
 
         if automatico:
             self.lb_status.configure(
@@ -3674,12 +3959,13 @@ class Janela(tk.Tk):
     def aplica_comando(self, valve_pct, pump2_pct):
         """Ponto UNICO de escrita de VALVE/PUMP2: sliders, botoes e ensaios passam por aqui.
 
-        Intertravamento: PUMP2 so e aceito com VALVE em 100 % (S totalmente
-        aberta) - nao basta S estar parcialmente aberta.
+        Intertravamento: PUMP2 so fica ligada com VALVE >= VALVE_MIN_COM_BOMBA;
+        senao PUMP2 e zerada aqui (rede de seguranca - os sliders e botoes
+        recusam o pedido antes de chegar aqui).
         """
         valve_pct = max(0.0, min(100.0, valve_pct))
         pump2_pct = max(0.0, min(100.0, pump2_pct))
-        if valve_pct < 100.0 - 1e-6 and not self.valve_livre:
+        if valve_pct < VALVE_MIN_COM_BOMBA - 1e-6:
             pump2_pct = 0.0
         self.valve_pct, self.pump2_pct = valve_pct, pump2_pct
 
@@ -3696,25 +3982,35 @@ class Janela(tk.Tk):
     def _avisa_pump2_bloqueado(self):
         messagebox.showwarning(
             'Intertravamento',
-            'PUMP2 bloqueado: abra a valvula S em 100 % antes de acionar a '
-            'bomba (a bomba contra a valvula parcial ou totalmente fechada '
+            f'PUMP2 bloqueado: abra a valvula S em pelo menos {VALVE_MIN_COM_BOMBA:.0f} % '
+            'antes de acionar a bomba (a bomba contra a valvula quase fechada '
             'pressuriza a linha).')
 
+    def _avisa_valve_bloqueada(self):
+        messagebox.showwarning(
+            'Intertravamento',
+            f'VALVE nao pode ficar abaixo de {VALVE_MIN_COM_BOMBA:.0f} % com PUMP2 '
+            'ligada. Desligue PUMP2 antes de fechar mais a valvula.')
+
     def define_valve_livre(self, livre):
-        """Liga/desliga o slider de VALVE (e o relaxamento do intertravamento)
-        durante a malha da Aula 4; chamado por `AbaAula4`."""
+        """Liga/desliga o slider de VALVE durante a malha da Aula 4 (o
+        intertravamento continua valendo); chamado por `AbaAula4`."""
         self.valve_livre = livre
         self._atualiza_controles()
 
     def _slider_valve_moveu(self, _valor):
         if self.controle_owner is not None and not self.valve_livre:
             return
-        self.aplica_comando(_arredonda_passo(self.var_slider_valve.get()), self.pump2_pct)
+        novo = _arredonda_passo(self.var_slider_valve.get())
+        if novo < self._valve_minimo() - 1e-6:
+            novo = self._valve_minimo()
+            self.var_slider_valve.set(novo)
+        self.aplica_comando(novo, self.pump2_pct)
 
     def _slider_pump2_moveu(self, _valor):
         if self.controle_owner is not None:
             return
-        if not self._valve_totalmente_aberta():
+        if not self._valve_permite_pump2():
             self.var_slider_pump2.set(0.0)
             self._avisa_pump2_bloqueado()
             return
@@ -3723,13 +4019,13 @@ class Janela(tk.Tk):
     def _incrementa_valve(self, delta):
         if self.controle_owner is not None and not self.valve_livre:
             return
-        novo = _arredonda_passo(self.valve_pct + delta)
+        novo = max(self._valve_minimo(), _arredonda_passo(self.valve_pct + delta))
         self.aplica_comando(novo, self.pump2_pct)
 
     def _incrementa_pump2(self, delta):
         if self.controle_owner is not None:
             return
-        if not self._valve_totalmente_aberta():
+        if not self._valve_permite_pump2():
             self._avisa_pump2_bloqueado()
             return
         novo = _arredonda_passo(self.pump2_pct + delta)
@@ -3738,13 +4034,17 @@ class Janela(tk.Tk):
     def _alterna_valve_botao(self):
         if self.controle_owner is not None:
             return
-        novo = 0.0 if self._valve_totalmente_aberta() else 100.0
+        ligada = self.valve_pct >= 100.0 - 1e-6
+        if ligada and self._valve_minimo() > 0.0:
+            self._avisa_valve_bloqueada()
+            return
+        novo = 0.0 if ligada else 100.0
         self.aplica_comando(novo, self.pump2_pct)
 
     def _alterna_pump2_botao(self):
         if self.controle_owner is not None:
             return
-        if not self._valve_totalmente_aberta():
+        if not self._valve_permite_pump2():
             self._avisa_pump2_bloqueado()
             return
         novo = 0.0 if self.pump2_pct >= 100.0 - 1e-6 else 100.0
@@ -3762,10 +4062,33 @@ class Janela(tk.Tk):
 
     # -- calibracao de LT (definida pelo botao do painel de leituras) ------
 
-    def mostra_curvas_controlador(self, ativo):
-        """Liga/desliga as curvas u, u_K e u_Ti e seus checkboxes; chamado
-        por `AbaAula4` ao iniciar e ao encerrar a malha."""
+    # Visualizacao padrao ao iniciar a malha da Aula 4 (o usuario pode
+    # alterar pelos checkboxes durante o ensaio).
+    VISUALIZACAO_MALHA = {
+        'LT': False, 'FT2': False, 'PUMP2': True, 'VALVE': False,
+        'u': False, 'uc': True, 'uK': False, 'uTi': False, 'uD': False, 'e': True,
+    }
+
+    def _aplica_visualizacao_malha(self):
+        for chave, visivel in self.VISUALIZACAO_MALHA.items():
+            var = self.vars_serie.get(chave) or self.vars_ctrl.get(chave)
+            if var is not None:
+                var.set(visivel)
+            self.gr.visiveis[chave] = visivel
+        self.var_serie_altura.set(True)
+        self.gr.define_visivel_altura(True)
+
+    def mostra_curvas_controlador(self, ativo, com_derivativo=False):
+        """Liga/desliga as curvas u, u_c, u_K, u_Ti (e u_D, se `com_derivativo`) e
+        seus checkboxes; chamado por `AbaAula4` e por `PainelPID` ao iniciar e
+        ao encerrar a malha."""
         if ativo:
+            cb_d, cb_e = self.cbs_ctrl['uD'], self.cbs_ctrl['e']
+            if com_derivativo:
+                cb_d.pack(side='left', padx=(6, 0), before=cb_e)
+            else:
+                cb_d.pack_forget()
+            self._aplica_visualizacao_malha()
             self.quadro_ctrl.pack(side='left', padx=(10, 0))
         else:
             self.quadro_ctrl.pack_forget()
@@ -3909,6 +4232,8 @@ class Janela(tk.Tk):
         ok_pdf, erro_pdf = self._salva_pdf_exportacao(caminho_pdf, linhas)
 
         resumo = f'{len(linhas)} amostras exportadas.\n\nCSV: {caminho_csv}'
+        if any(self.painel_pid.parametros_em(t) is not None for t, _v in linhas):
+            resumo += '\n(com as colunas pid_* dos parametros do PID em vigor)'
         if ok_pdf:
             resumo += f'\nPDF: {caminho_pdf}'
         else:
@@ -3919,9 +4244,12 @@ class Janela(tk.Tk):
 
     def _salva_csv_exportacao(self, caminho, linhas):
         t0 = linhas[0][0]
+        # Se havia PID livre ativo em alguma amostra do recorte, o CSV ganha as
+        # colunas com os parametros que estavam em vigor em cada amostra.
+        com_pid = any(self.painel_pid.parametros_em(t) is not None for t, _v in linhas)
         with open(caminho, 'w', newline='') as arquivo:
             escritor = csv.writer(arquivo)
-            escritor.writerow(COLUNAS_EXPORTACAO)
+            escritor.writerow(COLUNAS_EXPORTACAO + (COLUNAS_PID_EXPORTACAO if com_pid else []))
             for t, valores in linhas:
                 lt, ft2 = valores['LT'], valores['FT2']
                 pt, tt5 = valores['PT'], valores['TT5']
@@ -3934,7 +4262,7 @@ class Janela(tk.Tk):
                     tt5, f'{conta_para_volts(tt5):.4f}',
                     pump2, f'{conta_para_volts(pump2):.4f}', f'{conta_para_percentual(pump2):.1f}',
                     valve, f'{conta_para_volts(valve):.4f}', f'{conta_para_percentual(valve):.1f}',
-                ])
+                ] + (self.painel_pid.linha_exportacao(t) if com_pid else []))
 
     def _salva_pdf_exportacao(self, caminho, linhas):
         try:
