@@ -116,6 +116,25 @@ SERIES_GRAFICO = (
     ('VALVE', 'VALVE (valvula S)', '#a11'),
 )
 
+# Curvas do controlador da Aula 4, em % (mesmo eixo esquerdo das series acima):
+# u (comando aplicado, ja saturado), u_K (termo proporcional Kc*e) e u_Ti (termo
+# integral que entrou no calculo de v[k]). So sao desenhadas, e so ganham
+# checkbox, enquanto uma malha da Aula 4 esta em curso (`Grafico.ctrl_ativo`).
+# u_K pode ser negativo, entao o eixo esquerdo se estende alem de -5..105 %
+# quando elas estao em tela (ver `Grafico.redesenha`).
+SERIES_CTRL = (
+    ('v', 'v (u sem saturacao)', '#4dd0e1'),
+    ('u', 'u (saturado)', '#00565f'),
+    ('ud', 'u+d (enviado a bomba)', '#37474f'),
+    ('uK', 'u_K (proporcional)', '#c2185b'),
+    ('uTi', 'u_Ti (integral)', '#5d4037'),
+)
+
+# Erro e = r - h, em mm: mesma natureza da curva de altura, entao vai no eixo
+# secundario (mm) e nao no de %. Tambem so existe com a malha da Aula 4 em
+# curso, e pode ser negativo (o eixo se estende para baixo, ver `redesenha`).
+SERIE_ERRO = ('e', 'e (erro, mm)', '#3949ab')
+
 # A curva de altura do nivel (h, em mm) nao entra em SERIES_GRAFICO: ao
 # contrario das demais, ela nao e uma fracao do fundo de escala do
 # instrumento (0-100 %), e sim uma grandeza fisica em mm, com faixa propria.
@@ -452,8 +471,11 @@ class Grafico(tk.Canvas):
     def __init__(self, master, janela_s=JANELA_S, **kw):
         super().__init__(master, background='white', highlightthickness=1,
                          highlightbackground='#b0b0b0', **kw)
-        self.series = {chave: deque() for chave, _r, _c in SERIES_GRAFICO}
-        self.visiveis = {chave: True for chave, _r, _c in SERIES_GRAFICO}
+        self.series = {chave: deque() for chave, _r, _c in SERIES_GRAFICO + SERIES_CTRL + (SERIE_ERRO,)}
+        self.visiveis = {chave: True for chave, _r, _c in SERIES_GRAFICO + SERIES_CTRL + (SERIE_ERRO,)}
+        # Curvas de SERIES_CTRL: so entram no desenho com a malha da Aula 4 em
+        # curso; fora disso ficam em memoria, mas escondidas.
+        self.ctrl_ativo = False
         self.janela_s = float(janela_s)
         self._fonte_legenda = tkfont.Font(font=('TkDefaultFont', 8))
 
@@ -556,6 +578,24 @@ class Grafico(tk.Canvas):
     def define_visivel_altura(self, visivel):
         self.altura_visivel = visivel
         self.redesenha()
+
+    def define_ctrl_ativo(self, ativo):
+        self.ctrl_ativo = ativo
+        self.redesenha()
+
+    def mostra_erro(self):
+        return self.ctrl_ativo and self.visiveis.get(SERIE_ERRO[0], True)
+
+    def series_em_uso(self):
+        return SERIES_GRAFICO + (SERIES_CTRL if self.ctrl_ativo else ())
+
+    def limpa_ctrl(self):
+        """So as curvas do controlador (SERIES_CTRL e o erro), chamado por
+        `AbaAula4` ao iniciar uma nova malha."""
+        for chave, _r, _c in SERIES_CTRL + (SERIE_ERRO,):
+            self.series[chave].clear()
+            if self._series_pausadas is not None:
+                self._series_pausadas[chave] = []
 
     def extensao(self):
         """(t_ini, t_fim) de TODO o historico em memoria, ou None se vazio."""
@@ -813,7 +853,8 @@ class Grafico(tk.Canvas):
         if self.on_rolagem is not None:
             self.on_rolagem(*self.fracoes_rolagem())
 
-        todos_pontos = {chave: self._visiveis(chave) for chave, _r, _c in SERIES_GRAFICO}
+        series_em_uso = self.series_em_uso()
+        todos_pontos = {chave: self._visiveis(chave) for chave, _r, _c in series_em_uso}
         t_ini, t_fim = self.janela_visivel()
         t_ini = max(0.0, t_ini)
         if t_fim - t_ini < 1.0:
@@ -821,13 +862,28 @@ class Grafico(tk.Canvas):
         if self.escala_adaptativa:
             # so as series marcadas em "mostrar" entram na conta: uma serie
             # escondida nao esta "em exibicao" e nao deve esticar o eixo
-            valores_pct = [v for chave, _r, _c in SERIES_GRAFICO
+            valores_pct = [v for chave, _r, _c in series_em_uso
                            if self.visiveis.get(chave, True)
                            for _t, v in todos_pontos[chave]]
             v_lo, v_hi = faixa_ajustada(valores_pct, span_minimo=1.0,
                                         reserva=(-5.0, 105.0))
         else:
             v_lo, v_hi = -5.0, 105.0
+            # u_K pode ser negativo e u_Ti passar de 100 %: estende o eixo
+            # (em multiplos de 20) so o bastante para caberem, sem cortar.
+            ctrl = [v for chave, _r, _c in SERIES_CTRL
+                    if self.ctrl_ativo and self.visiveis.get(chave, True)
+                    for _t, v in todos_pontos[chave]]
+            if ctrl:
+                v_lo = min(v_lo, math.floor(min(ctrl) / 20.0) * 20.0 - 5.0)
+                v_hi = max(v_hi, math.ceil(max(ctrl) / 20.0) * 20.0 + 5.0)
+            if self.mostra_erro():
+                # o fundo do eixo de h e -ALTURA_MAX_MM*f/(1-f), com f =
+                # -v_lo/(v_hi-v_lo) (ver `faixa_altura`); para caber um erro
+                # de -m mm, basta v_lo = -m/ALTURA_MAX_MM * v_hi.
+                e_min = min((v for _t, v in self._visiveis(SERIE_ERRO[0])), default=0.0)
+                if e_min < 0:
+                    v_lo = min(v_lo, -(-e_min / ALTURA_MAX_MM) * v_hi - 5.0)
 
         def px(t):
             return x0 + (t - t_ini) / (t_fim - t_ini) * (x1 - x0)
@@ -838,7 +894,9 @@ class Grafico(tk.Canvas):
         if self.escala_adaptativa:
             marcas_pct = [(v_lo + (v_hi - v_lo) * i / 4, '.1f') for i in range(5)]
         else:
-            marcas_pct = [(pct, '.0f') for pct in (0, 20, 40, 60, 80, 100)]
+            passo_marca = 20
+            primeira = math.ceil(v_lo / passo_marca) * passo_marca
+            marcas_pct = [(pct, '.0f') for pct in range(int(primeira), int(v_hi) + 1, passo_marca)]
         for pct, formato in marcas_pct:
             y = py(pct)
             self.create_line(x0, y, x1, y, fill='#e8e8e8')
@@ -857,7 +915,7 @@ class Grafico(tk.Canvas):
         # len(rotulo) - a estimativa antiga subestimava rotulos como "VALVE
         # (valvula S)" e fazia um item invadir o proximo.
         legenda_x = x0
-        for chave, rotulo, cor in SERIES_GRAFICO:
+        for chave, rotulo, cor in series_em_uso:
             if not self.visiveis.get(chave, True):
                 continue
             pontos = todos_pontos[chave]
@@ -901,11 +959,13 @@ class Grafico(tk.Canvas):
         # Curva de altura (h, mm): eixo vertical proprio, a direita, em faixa
         # FIXA de 0 a ALTURA_MAX_MM (nao 0-100 %, como as demais series, nem
         # auto-ajustada aos pontos visiveis - ver `faixa_altura`).
-        if self.altura_disponivel and self.altura_visivel:
-            pontos_alt = self._visiveis_altura()
+        mostra_h = self.altura_disponivel and self.altura_visivel
+        pontos_erro = self._visiveis(SERIE_ERRO[0]) if self.mostra_erro() else []
+        if mostra_h or pontos_erro:
+            pontos_alt = self._visiveis_altura() if mostra_h else []
             if self.escala_adaptativa:
                 alt_lo, alt_hi = faixa_ajustada(
-                    [v for _t, v in pontos_alt], span_minimo=5.0,
+                    [v for _t, v in pontos_alt + pontos_erro], span_minimo=5.0,
                     reserva=faixa_altura(-5.0, 105.0))
             else:
                 alt_lo, alt_hi = faixa_altura(v_lo, v_hi)
@@ -922,14 +982,16 @@ class Grafico(tk.Canvas):
             else:
                 # com o topo fixo, os rotulos podem ser redondos (0, 50, ... 250)
                 # em vez das fracoes do maximo em tela (0, 62, 125, 188, 250)
-                marcas_alt, v = [], 0.0
+                marcas_alt = []
+                v = math.ceil(alt_lo / ALTURA_PASSO_MM - 1e-9) * ALTURA_PASSO_MM
                 while v <= alt_hi + 1e-9:
                     marcas_alt.append((v, '.0f'))
                     v += ALTURA_PASSO_MM
             for v, formato in marcas_alt:
                 self.create_text(x1 + 6, py_alt(v), text=f'{v:{formato}}', anchor='w',
                                  font=('TkDefaultFont', 8), fill=COR_ALTURA)
-            self.create_text(x1 + 6, y0 - 10, text='h [mm]', anchor='w',
+            self.create_text(x1 + 6, y0 - 10, text='h, e [mm]' if pontos_erro else 'h [mm]',
+                             anchor='w',
                              font=('TkDefaultFont', 8, 'italic'), fill=COR_ALTURA)
 
             if self.modo == 'dispersao':
@@ -957,10 +1019,40 @@ class Grafico(tk.Canvas):
                     x, y = px(t_ult), py_alt(v_ult)
                     self.create_oval(x - 3, y - 3, x + 3, y + 3, fill=COR_ALTURA, outline='')
 
-            self.create_rectangle(legenda_x, 8, legenda_x + 10, 18, fill=COR_ALTURA, outline='')
-            self.create_text(legenda_x + 14, 13, text=ROTULO_ALTURA, anchor='w',
-                             font=self._fonte_legenda, fill='#333')
-            legenda_x += 14 + self._fonte_legenda.measure(ROTULO_ALTURA) + 20
+            if mostra_h:
+                self.create_rectangle(legenda_x, 8, legenda_x + 10, 18, fill=COR_ALTURA,
+                                      outline='')
+                self.create_text(legenda_x + 14, 13, text=ROTULO_ALTURA, anchor='w',
+                                 font=self._fonte_legenda, fill='#333')
+                legenda_x += 14 + self._fonte_legenda.measure(ROTULO_ALTURA) + 20
+
+            # Erro e = r - h (mm): mesmo eixo da altura; linha de zero tracejada
+            # para ver de que lado da referencia o nivel esta.
+            if pontos_erro:
+                self.create_line(x0, py_alt(0.0), x1, py_alt(0.0), fill=SERIE_ERRO[2],
+                                 dash=(2, 4))
+                if self.modo == 'dispersao':
+                    if len(pontos_erro) >= 2:
+                        traco = [px(pontos_erro[0][0]), py_alt(pontos_erro[0][1])]
+                        for i in range(1, len(pontos_erro)):
+                            x_atu = px(pontos_erro[i][0])
+                            traco += [x_atu, py_alt(pontos_erro[i - 1][1]),
+                                      x_atu, py_alt(pontos_erro[i][1])]
+                        self.create_line(*traco, fill=SERIE_ERRO[2], width=1, dash=(3, 2))
+                    for t, v in pontos_erro:
+                        x, y = px(t), py_alt(v)
+                        self.create_oval(x - 5.5, y - 5.5, x + 5.5, y + 5.5,
+                                         fill=SERIE_ERRO[2], outline='')
+                elif len(pontos_erro) >= 2:
+                    traco = []
+                    for t, v in pontos_erro:
+                        traco += [px(t), py_alt(v)]
+                    self.create_line(*traco, fill=SERIE_ERRO[2], width=2)
+                self.create_rectangle(legenda_x, 8, legenda_x + 10, 18, fill=SERIE_ERRO[2],
+                                      outline='')
+                self.create_text(legenda_x + 14, 13, text=SERIE_ERRO[1], anchor='w',
+                                 font=self._fonte_legenda, fill='#333')
+                legenda_x += 14 + self._fonte_legenda.measure(SERIE_ERRO[1]) + 20
 
             # Curva de referencia (r, mm) da malha fechada da Aula 4: mesmo
             # eixo (py_alt) da curva de altura acima, sempre desenhada como
@@ -3121,6 +3213,8 @@ class AbaAula4(AbaBase):
             self.tabela.delete(item)
 
         self.app.gr.limpa_referencia()
+        self.app.gr.limpa_ctrl()
+        self.app.mostra_curvas_controlador(True)
         self._pi = pi
         self._estado = {
             'seq': seq, 'idx': 0, 'dur': dur, 'T': T,
@@ -3133,6 +3227,7 @@ class AbaAula4(AbaBase):
         # de verdade do controlador so sai no proximo `atualiza_amostra`, e a
         # partida sem solavanco garante que ele coincide com este.
         self.app.aplica_comando(100.0, u_atual)
+        self.app.define_valve_livre(True)             # slider de VALVE = disturbio
         self.bt_malha.configure(text='parar malha')
         self.lb_malha.configure(text=f'patamar 1/{len(seq)}: r -> {seq[0]:.0f} mm')
 
@@ -3148,8 +3243,13 @@ class AbaAula4(AbaBase):
         self._escritor_pat = None
         self._estado = None
         self._pi = None
+        self.app.define_valve_livre(False)
         if desliga_bomba:
             self.app.aplica_comando(100.0, 0.0)
+        elif self.app.valve_pct < 100.0 - 1e-6:
+            # devolve S a 100 % (intertravamento de volta) mantendo a bomba
+            self.app.aplica_comando(100.0, self.app.pump2_pct)
+        self.app.mostra_curvas_controlador(False)
         self.app.libera_controle()
         self.bt_malha.configure(text='iniciar malha')
         self.lb_malha.configure(text=f'parado ({motivo}). dados em {caminho}.')
@@ -3186,7 +3286,7 @@ class AbaAula4(AbaBase):
         u, v = self._pi.calcula(r, h)
         d = estado['d_amp'] if estado['d_ini'] <= trel <= estado['d_fim'] else 0.0
         pump2_aplicado = max(0.0, min(100.0, u + d))
-        self.app.aplica_comando(100.0, pump2_aplicado)
+        self.app.aplica_comando(self.app.valve_pct, pump2_aplicado)
 
         e = r - h
         self._escritor.writerow([
@@ -3210,14 +3310,18 @@ class AbaAula4(AbaBase):
             estado['h_ext'] = min(estado['h_ext'], h)
 
         self.app.gr.acrescenta_referencia(t, r)
+        self.app.gr.acrescenta(t, {'v': v, 'u': u, 'ud': pump2_aplicado, 'e': e,
+                                   'uK': self._pi.Kc * e, 'uTi': i_usado})
 
         self.lb_malha.configure(
             text=f'patamar {idx + 1}/{len(seq)}: r = {r:.0f} mm | faltam '
                  f'{self._mmss(estado["dur"] - (trel - estado["t_inicio_patamar"]))} | '
-                 f'h = {h:.1f} mm | e = {e:+.1f} mm | u = {u:.1f} % | v = {v:+.1f} %')
+                 f'h = {h:.1f} mm | e = {e:+.1f} mm | u = {u:.1f} % '
+                 f'(P {self._pi.Kc * e:+.1f} % | I {i_usado:+.1f} %) | v = {v:+.1f} %')
         self.app.status_ensaio(
             f'patamar {idx + 1}/{len(seq)} - r {r:.0f} mm   |   h {h:6.1f} mm   |   '
-            f'u {u:5.1f} %   |   v {v:+6.1f} %   |   i {self._pi.I:+6.1f} %')
+            f'u {u:5.1f} % (P {self._pi.Kc * e:+6.1f} | I {i_usado:+6.1f})   |   '
+            f'v {v:+6.1f} %')
 
         if trel - estado['t_inicio_patamar'] >= estado['dur']:
             h_final = self._janela_media(estado['buffer_h'], trel, self.MEDIA_H_FINAL_S)
@@ -3247,19 +3351,6 @@ class AbaAula4(AbaBase):
     def atualiza_amostra(self, t, valores):
         if self._estado is not None:
             self._atualiza_malha(t, valores)
-
-
-class AbaEmDesenvolvimento(AbaBase):
-    """Placeholder para as aulas cujo material ainda nao foi escrito (ver CLAUDE.md)."""
-
-    def __init__(self, master, app, numero):
-        super().__init__(master, app)
-        ttk.Label(
-            self, text=f'Aula {numero}: material ainda em desenvolvimento.\n\n'
-                      'Quando o roteiro desta aula estiver pronto, acrescente aqui a '
-                      'aba com as ferramentas de ensaio correspondentes (siga o padrao '
-                      'de AbaAula1/AbaAula2 neste mesmo arquivo).',
-            justify='left', foreground='#666').pack(anchor='nw')
 
 
 # ---------------------------------------------------------------------------
@@ -3300,6 +3391,10 @@ class Janela(tk.Tk):
         self.valve_pct = 0.0
         self.pump2_pct = 0.0
         self.controle_owner = None    # None = sliders; string = nome do ensaio dono
+        # True so durante a malha da Aula 4: o slider de VALVE fica livre para o
+        # aluno injetar disturbio de vazao, a malha respeita o valor dele e o
+        # intertravamento "PUMP2 so com VALVE em 100 %" fica relaxado.
+        self.valve_livre = False
         self.zerar_ao_sair = tk.BooleanVar(value=True)
 
         self.janela_s = float(janela_s)
@@ -3434,6 +3529,19 @@ class Janela(tk.Tk):
             command=lambda: self.gr.define_visivel_altura(self.var_serie_altura.get()))
         self.cb_serie_altura.pack(side='left', padx=(6, 0))
 
+        # Curvas do controlador (u, u_K, u_Ti): o quadro so e empacotado
+        # enquanto a malha da Aula 4 esta em curso (`mostra_curvas_controlador`).
+        self.quadro_ctrl = ttk.Frame(linha_series)
+        self.vars_ctrl = {}
+        for chave, rotulo, cor in SERIES_CTRL + (SERIE_ERRO,):
+            var = tk.BooleanVar(value=True)
+            self.vars_ctrl[chave] = var
+            tk.Checkbutton(
+                self.quadro_ctrl, text=rotulo, variable=var, fg=cor, activeforeground=cor,
+                selectcolor='white', font=('TkDefaultFont', 9),
+                command=lambda c=chave, v=var: self.gr.define_visivel(c, v.get()),
+            ).pack(side='left', padx=(6, 0))
+
         # Altura generosa por padrao; o proprio `Panedwindow` deixa o usuario
         # arrastar a divisoria para dar ainda mais (ou menos) espaco ao
         # grafico em relacao as abas logo abaixo.
@@ -3464,8 +3572,6 @@ class Janela(tk.Tk):
         self._adiciona_aba('Aula 2', AbaAula2)
         self._adiciona_aba('Aula 3', AbaAula3)
         self._adiciona_aba('Aula 4', AbaAula4)
-        for n in range(5, 8):
-            self._adiciona_aba(f'Aula {n}', AbaEmDesenvolvimento, n)
 
         self.lb_status = ttk.Label(self, text='iniciando...', anchor='w',
                                    relief='sunken', padding=(6, 3))
@@ -3536,7 +3642,7 @@ class Janela(tk.Tk):
 
     def _atualiza_controles(self):
         automatico = self.controle_owner is not None
-        estado = 'disabled' if automatico else 'normal'
+        estado = 'disabled' if automatico and not self.valve_livre else 'normal'
         self.sl_valve.configure(state=estado)
         # PUMP2 so libera com VALVE em 100 % (S totalmente aberta antes de PUMP2).
         pump2_liberado = not automatico and self._valve_totalmente_aberta()
@@ -3573,7 +3679,7 @@ class Janela(tk.Tk):
         """
         valve_pct = max(0.0, min(100.0, valve_pct))
         pump2_pct = max(0.0, min(100.0, pump2_pct))
-        if valve_pct < 100.0 - 1e-6:
+        if valve_pct < 100.0 - 1e-6 and not self.valve_livre:
             pump2_pct = 0.0
         self.valve_pct, self.pump2_pct = valve_pct, pump2_pct
 
@@ -3594,8 +3700,14 @@ class Janela(tk.Tk):
             'bomba (a bomba contra a valvula parcial ou totalmente fechada '
             'pressuriza a linha).')
 
+    def define_valve_livre(self, livre):
+        """Liga/desliga o slider de VALVE (e o relaxamento do intertravamento)
+        durante a malha da Aula 4; chamado por `AbaAula4`."""
+        self.valve_livre = livre
+        self._atualiza_controles()
+
     def _slider_valve_moveu(self, _valor):
-        if self.controle_owner is not None:
+        if self.controle_owner is not None and not self.valve_livre:
             return
         self.aplica_comando(_arredonda_passo(self.var_slider_valve.get()), self.pump2_pct)
 
@@ -3609,7 +3721,7 @@ class Janela(tk.Tk):
         self.aplica_comando(self.valve_pct, _arredonda_passo(self.var_slider_pump2.get()))
 
     def _incrementa_valve(self, delta):
-        if self.controle_owner is not None:
+        if self.controle_owner is not None and not self.valve_livre:
             return
         novo = _arredonda_passo(self.valve_pct + delta)
         self.aplica_comando(novo, self.pump2_pct)
@@ -3649,6 +3761,15 @@ class Janela(tk.Tk):
         self.cb_janela.selection_clear()
 
     # -- calibracao de LT (definida pelo botao do painel de leituras) ------
+
+    def mostra_curvas_controlador(self, ativo):
+        """Liga/desliga as curvas u, u_K e u_Ti e seus checkboxes; chamado
+        por `AbaAula4` ao iniciar e ao encerrar a malha."""
+        if ativo:
+            self.quadro_ctrl.pack(side='left', padx=(10, 0))
+        else:
+            self.quadro_ctrl.pack_forget()
+        self.gr.define_ctrl_ativo(ativo)
 
     def _define_calibracao_lt(self, grau, coefs):
         """Callback do `PainelLeituras`: `grau`/`coefs` sao None quando o
