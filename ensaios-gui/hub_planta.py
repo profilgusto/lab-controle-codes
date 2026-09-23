@@ -140,7 +140,7 @@ SERIES_CTRL = (
 # Erro e = r - h, em mm: mesma natureza da curva de altura, entao vai no eixo
 # secundario (mm) e nao no de %. Tambem so existe com a malha da Aula 4 em
 # curso, e pode ser negativo (o eixo se estende para baixo, ver `redesenha`).
-SERIE_ERRO = ('e', 'e (erro, mm)', '#3949ab')
+SERIE_ERRO = ('e', 'e (erro, mm)', '#ff0000')
 
 # A curva de altura do nivel (h, em mm) nao entra em SERIES_GRAFICO: ao
 # contrario das demais, ela nao e uma fracao do fundo de escala do
@@ -3394,8 +3394,8 @@ class PIDLivre:
 
 class PainelPID(ttk.LabelFrame):
     """Comando com Controlador PID: fecha a malha de nivel "a vontade", fora de
-    qualquer pratica. Ganhos, set-point e demais campos valem a quente - sao
-    relidos a cada calculo do controlador."""
+    qualquer pratica. Com o PID ativo, editar um campo NAO o aplica: o botao
+    "Definir mudanca" aparece e so ele leva os valores ao controlador."""
 
     def __init__(self, master, app, **kw):
         super().__init__(master, text='Comando com Controlador PID', **kw)
@@ -3445,11 +3445,24 @@ class PainelPID(ttk.LabelFrame):
         ttk.Entry(quad_sp, textvariable=self.vars['sp'], width=8,
                   font=('TkDefaultFont', 11, 'bold')).grid(row=0, column=1, padx=(4, 0))
 
-        self.bt = ttk.Button(self, text='Ativar PID', command=self._alterna)
-        self.bt.grid(row=1, column=0, sticky='w', pady=(8, 0))
+        quadro_bt = ttk.Frame(self)
+        quadro_bt.grid(row=1, column=0, sticky='w', pady=(8, 0))
+        self.bt = ttk.Button(quadro_bt, text='Ativar PID', command=self._alterna)
+        self.bt.pack(side='left')
+        # so visivel (pack) com o PID ativo e ao menos um campo diferente do
+        # que esta em vigor - ver `_atualiza_pendencia`
+        self.bt_def = ttk.Button(quadro_bt, text='Definir mudanca',
+                                 command=self._define_mudanca)
+        self._txt_vigor = None       # texto dos campos (+ anti-windup) em vigor
+        for v in list(self.vars.values()) + [self.var_aw]:
+            v.trace_add('write', self._atualiza_pendencia)
         self.lb = ttk.Label(self, text='desativado.', foreground='#555',
                             font=('TkDefaultFont', 8), wraplength=420, justify='left')
         self.lb.grid(row=1, column=1, columnspan=3, sticky='w', padx=(4, 0), pady=(8, 0))
+        # metricas de atuacao da ultima amostra (fonte monoespacada e campos de
+        # largura fixa, para o painel nao oscilar de tamanho a cada calculo)
+        self.lb_met = ttk.Label(self, text='', font=('TkFixedFont', 9), justify='left')
+        self.lb_met.grid(row=2, column=0, columnspan=4, sticky='w', pady=(4, 0))
 
     # -- leitura dos campos --------------------------------------------
 
@@ -3478,20 +3491,32 @@ class PainelPID(ttk.LabelFrame):
             raise ValueError('u_max tem de ser maior que u_min.')
         return p
 
-    def _le_a_quente(self):
-        """Como `_le_todos`, mas campo a campo: um campo invalido mantem o
-        ultimo valor bom SO dele, sem travar os demais. Devolve (p, aviso)."""
-        p, erros = dict(self._p), []
-        for chave, lim in self.LIMITES.items():
-            try:
-                p[chave] = self._le(chave, *lim)
-            except ValueError as erro:
-                erros.append(str(erro))
-        if p['umax'] <= p['umin']:
-            p['umin'], p['umax'] = self._p['umin'], self._p['umax']
-            erros.append('u_max tem de ser maior que u_min.')
-        aviso = f'  [mantido o valor anterior: {" ".join(erros)}]' if erros else ''
-        return p, aviso
+    def _texto_campos(self):
+        return {**{c: v.get().strip() for c, v in self.vars.items()},
+                'aw': self.var_aw.get()}
+
+    def _atualiza_pendencia(self, *_):
+        """Mostra 'Definir mudanca' so com PID ativo e campos alterados."""
+        pendente = (self._pid is not None and self._txt_vigor is not None
+                    and self._texto_campos() != self._txt_vigor)
+        if pendente and not self.bt_def.winfo_manager():
+            self.bt_def.pack(side='left', padx=(6, 0))
+        elif not pendente and self.bt_def.winfo_manager():
+            self.bt_def.pack_forget()
+
+    def _define_mudanca(self):
+        """Leva ao controlador em curso os campos editados."""
+        try:
+            p = self._le_todos()
+        except ValueError as erro:
+            messagebox.showerror('Parametro invalido', str(erro))
+            return
+        self._fecha_segmento(self._t_amostra + 1e-6)
+        self._p = p
+        self._aplica_parametros(p)
+        self._abre_segmento(self._t_amostra + 1e-6, p)
+        self._txt_vigor = self._texto_campos()
+        self._atualiza_pendencia()
 
     def _aplica_parametros(self, p):
         pid = self._pid
@@ -3559,6 +3584,7 @@ class PainelPID(ttk.LabelFrame):
         self._pid.inicia(u_atual, p['sp'] - h, h)
         self._t_ult = None
         self._p = p
+        self._txt_vigor = self._texto_campos()
         hist = self.app._historico
         self._t_amostra = hist[-1][0] if hist else 0.0
         self._abre_segmento(self._t_amostra + 1e-6, p)
@@ -3571,11 +3597,14 @@ class PainelPID(ttk.LabelFrame):
         self.app.aplica_comando(100.0, u_atual)
         self.app.define_valve_livre(True)
         self.bt.configure(text='Desativar PID')
-        self.lb.configure(text='ativo. Ganhos e set-point valem a quente.', foreground='#a11')
+        self.lb.configure(text='ativo. Edite os campos e use "Definir mudanca".',
+                          foreground='#a11')
+        self._atualiza_pendencia()
 
     def _desativa(self, motivo, desliga_bomba=False):
         self._fecha_segmento(self._t_amostra + 1e-6)   # inclui a ultima amostra
         self._pid = None
+        self._atualiza_pendencia()
         self.app.define_valve_livre(False)
         if desliga_bomba:
             self.app.aplica_comando(100.0, 0.0)
@@ -3585,6 +3614,7 @@ class PainelPID(ttk.LabelFrame):
         self.app.libera_controle()
         self.bt.configure(text='Ativar PID')
         self.lb.configure(text=f'desativado ({motivo}).', foreground='#555')
+        self.lb_met.configure(text='')
 
     # -- laco de controle ----------------------------------------------
 
@@ -3604,14 +3634,8 @@ class PainelPID(ttk.LabelFrame):
                 f'{MALHA_H_DESARME_MM:.0f} mm.')
             return
 
-        # Relê os campos a cada amostra: entrada invalida (ou pela metade, ex.:
-        # campo vazio durante a digitacao) mantem os valores anteriores.
-        p, aviso = self._le_a_quente()
-        self._p = p
-        if dict(p, aw=self.var_aw.get()) != self.registro[-1]['p']:
-            self._fecha_segmento(t)             # mudanca a quente: novo segmento
-            self._abre_segmento(t, p)
-        self._aplica_parametros(p)
+        # Parametros em vigor so mudam por `_define_mudanca`.
+        p = self._p
         sp = p['sp']
 
         if self._t_ult is not None and t - self._t_ult < pid.T - 1e-6:
@@ -3627,12 +3651,14 @@ class PainelPID(ttk.LabelFrame):
         self.app.gr.acrescenta_referencia(t, sp)
         self.app.gr.acrescenta(t, {'u': u, 'uc': uc, 'e': e, 'uK': P, 'uTi': I, 'uD': D})
 
+        self.lb_met.configure(
+            text=f'u = {u:+7.1f} %   u_c = {uc:6.1f} %   e = {e:+7.1f} mm\n'
+                 f'u_K = {P:+7.1f} %   u_Ti = {I:+7.1f} %   u_D = {D:+7.1f} %')
         texto = (f'h = {h:.1f} mm | r = {sp:.0f} | e = {e:+.1f} | u_c = {uc:.1f} % '
                  f'(P {P:+.1f} | I {I:+.1f} | D {D:+.1f}) | u = {u:+.1f} %')
         self.lb.configure(
-            text='ativo.' + aviso if aviso else 'ativo. Ganhos e set-point valem a quente.',
-            foreground='#a11')
-        self.app.status_ensaio(texto + aviso)
+            text='ativo. Edite os campos e use "Definir mudanca".', foreground='#a11')
+        self.app.status_ensaio(texto)
 
 
 # ---------------------------------------------------------------------------
