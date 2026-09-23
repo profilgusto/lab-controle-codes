@@ -3852,12 +3852,24 @@ class Janela(tk.Tk):
         self._adiciona_aba('Aula 2', AbaAula2)
         self._adiciona_aba('Aula 3', AbaAula3)
         self._adiciona_aba('Aula 4', AbaAula4)
+        # O painel do PID livre so aparece com a aba da Aula 4 ativa.
+        self.notebook.bind('<<NotebookTabChanged>>', self._atualiza_visib_pid)
+        self._atualiza_visib_pid()
 
         self.lb_status = ttk.Label(self, text='iniciando...', anchor='w',
                                    relief='sunken', padding=(6, 3))
         self.lb_status.pack(fill='x', padx=10, pady=(0, 10))
 
         self._atualiza_controles()
+
+    def _atualiza_visib_pid(self, _evento=None):
+        """Mostra o painel do PID livre so quando a aba 'Aula 4' esta ativa.
+        Esconder o painel nao desativa um PID em curso: ele segue rodando."""
+        ativa = self.notebook.tab(self.notebook.select(), 'text') == 'Aula 4'
+        if ativa and not self.painel_pid.winfo_manager():
+            self.painel_pid.pack(side='left', fill='y')
+        elif not ativa and self.painel_pid.winfo_manager():
+            self.painel_pid.pack_forget()
 
     def _monta_setas(self, mestre, row, column, on_menos, on_mais):
         """Par de botoes '<'/'>' para incrementar/decrementar um slider em
